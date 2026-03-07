@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "etwpc"
+version = "0.1.0"
+description = "ETW Region Compiler — pathfinding.esf generator for new campaign map regions"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "shapely>=2.0.0",
+    "Pillow>=10.0.0",
+    "scikit-image>=0.21.0",
+    "lxml>=4.9.0",
+    "click>=8.1.0",
+    "pyproj>=3.5.0",
+    "tqdm>=4.65.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+etw-region-add = "etwpc.cli.main:cli"
+etw-inspect    = "etwpc.cli.inspect:cli"
+etw-roundtrip  = "etwpc.cli.roundtrip:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true

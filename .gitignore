@@ -1,0 +1,45 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Game data files — large, proprietary, not committed
+data/
+*.esf
+*.tga
+*.pack
+*.loc
+
+# Compiler output
+mod_output/
+out/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Keep directory stubs
+!data/.gitkeep
+!out/.gitkeep
+!mod_output/.gitkeep

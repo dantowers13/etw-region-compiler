@@ -1,0 +1,36 @@
+# =============================================================================
+# ETW Region Compiler — Python Dependencies
+# =============================================================================
+
+# Core scientific stack
+numpy>=1.24.0           # Occupancy grid as ndarray; vectorised cell operations
+scipy>=1.10.0           # Spatial algorithms, KD-trees for nearest-cell queries
+
+# Geometry
+shapely>=2.0.0          # Polygon operations: contains, intersection, bounds
+
+# Image processing
+Pillow>=10.0.0          # TGA read/write (map_regions.tga)
+scikit-image>=0.21.0    # measure.find_contours: trace colour mask → polygon
+
+# File formats
+lxml>=4.9.0             # XML parsing for taw's esf2xml output validation
+
+# CLI
+click>=8.1.0            # Argument parsing for etw-region-add command
+
+# GIS (optional, for GeoJSON input method)
+pyproj>=3.5.0           # WGS84 lat/lon → ETW world coordinate transform
+
+# Development and testing
+pytest>=7.4.0           # Test harness
+pytest-cov>=4.1.0       # Coverage reporting
+hypothesis>=6.82.0      # Property-based testing for binary format edge cases
+
+# Code quality
+ruff>=0.1.0             # Linting + formatting
+mypy>=1.5.0             # Static type checking
+
+# Utilities
+tqdm>=4.65.0            # Progress bars for large file operations
+rich>=13.0.0            # Formatted terminal output for validation reports
