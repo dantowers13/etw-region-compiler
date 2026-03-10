@@ -39,6 +39,12 @@ Thumbs.db
 *.swp
 *.swo
 
+# External tools (clone separately — see CLAUDE.md)
+tools/etwng/
+
+# Scratch files
+esf_inventory_*.txt
+
 # Keep directory stubs
 !data/.gitkeep
 !out/.gitkeep
