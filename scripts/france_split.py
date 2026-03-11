@@ -5,7 +5,7 @@ France split PoC: split the France pathfinding region into
 
 Changes to pathfinding.esf:
   1. n_passable / n_listed: 85 → 86
-  2. i2_ary: append regions.esf index for south_france (205)
+  2. i2_ary: append regions.esf index for south_france (74 = repurposed central_italy slot)
   3. u2_ary: add south_france to sorted-pid list + update adjacency
   4. grid_cells: remap T_U2 85→86 (old impassable) and 33→85 (south france cells)
 
@@ -41,7 +41,7 @@ NEW_IMPASS_T_U2      = 86    # new impassable sentinel T_U2 value (= n_passable_
 
 SOUTH_FRANCE_T_U2    = 85    # T_U2 value for south_france (occupies old impassable slot)
 SOUTH_FRANCE_PID     = 86    # 1-indexed path_id for south_france
-SOUTH_FRANCE_ESF_ID  = 205   # index in regions.esf (205 = appended at end)
+SOUTH_FRANCE_ESF_ID  = 74    # index in regions.esf (74 = repurposed central_italy slot)
 
 SPAIN_PID_1IDX       = 19    # spain 1-indexed path_id (for adjacency)
 
