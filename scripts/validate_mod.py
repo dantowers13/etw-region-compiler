@@ -289,14 +289,18 @@ else:
             pos = end + 1
         for pp in pack_paths:
             info(f"  pack contains: {pp}")
-        required = [
-            "db\\regions_tables\\regions",
-            "db\\campaign_map_settlements_tables\\campaign_map_settlements",
-            "db\\campaign_map_slots_tables\\campaign_map_slots",
+        # Check that each required table directory has at least one entry.
+        # Leaf filename can be anything (delta packs use unique names to avoid
+        # duplicating vanilla records from main.pack).
+        required_dirs = [
+            "db\\regions_tables\\",
+            "db\\campaign_map_settlements_tables\\",
+            "db\\campaign_map_slots_tables\\",
+            "db\\campaign_map_towns_and_ports_tables\\",
         ]
-        for req in required:
-            if req not in pack_paths:
-                err(f"  MISSING from pack: {req}")
+        for req_dir in required_dirs:
+            if not any(pp.startswith(req_dir) for pp in pack_paths):
+                err(f"  MISSING table in pack: {req_dir}")
 
 # ─── Report ───────────────────────────────────────────────────────────────────
 print("\n" + "=" * 70)
