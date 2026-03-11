@@ -5,11 +5,11 @@ Root cause of previous crash: the pack contained full vanilla tables (142/310/42
 records) which the engine merged with main.pack, doubling every vanilla entry.
 This script produces a minimal pack (1/2/5/1 records) matching Lord mod's URR pattern.
 
-Table formats (all confirmed from vanilla + Lord URR inspection):
+Table formats (byte-verified from vanilla hex dump):
   regions_tables:              str(name) str(continent) u32(R) u32(G) u32(B)
-  campaign_map_settlements:    str(key) str(region) str(display) u32(tier)
-  campaign_map_slots:          str(key) str(region) str(slot_type) str("") str("")
-  campaign_map_towns_and_ports: str(key) str(slot_type) str(display)  [repeating, no u32]
+  campaign_map_settlements:    str(key) str(region) str(display) u32(tier) str(slot_type)
+  campaign_map_slots:          str(key) str(region) str(slot_type) str("") str("") u8(0)
+  campaign_map_towns_and_ports: str(key) str(slot_type) str(display)  [repeating, no trailing u8]
 """
 
 from __future__ import annotations
@@ -53,14 +53,15 @@ def build_pack(output_path: Path, files: list[tuple[str, bytes]]) -> None:
 # RGB (220,140,60) must match TGA palette slot 254 and europe_lookup.tga repaint
 regions_rec = ws("occitania") + ws("cont_europe") + wu(220) + wu(140) + wu(60)
 
-# campaign_map_settlements: 1 record (settlement location, no slot-type suffix)
-# tier=5 matches Paris-level major settlements; Toulouse hosts 7 major building slots
-sett_rec = ws("settlement:occitania:toulouse") + ws("occitania") + ws("Toulouse") + wu(5)
+# campaign_map_settlements: 1 record
+# Format confirmed from vanilla: str(key) + str(region) + str(display) + u32(tier) + str(slot_type)
+# All vanilla settlement records use slot_type = "settlement".
+sett_rec = ws("settlement:occitania:toulouse") + ws("occitania") + ws("Toulouse") + wu(5) + ws("settlement")
 
 # campaign_map_slots: 2 resource slots  (town/port types go in towns_and_ports only)
-# Format: key + region + slot_type + "" + ""
+# Format confirmed from vanilla: str(key) + str(region) + str(slot_type) + str("") + str("") + u8(0)
 def slot_rec(key: str, region: str, slot_type: str) -> bytes:
-    return ws(key) + ws(region) + ws(slot_type) + ws("") + ws("")
+    return ws(key) + ws(region) + ws(slot_type) + ws("") + ws("") + b'\x00'
 
 slots_recs = [
     slot_rec("wine:occitania:bordeaux",       "occitania", "wine"),
