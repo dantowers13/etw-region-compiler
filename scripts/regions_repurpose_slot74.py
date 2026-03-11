@@ -27,7 +27,7 @@ from etwpc.io.esf_writer import ESFWriter
 from etwpc.io.esf_types import ESFNode, ESFPrimitive, T_ASCII, T_UNICODE, T_U1_ARY
 
 INPUT_PATH  = Path("data/gc/regions.esf")
-OUTPUT_PATH = Path("data/gc/regions_occitania_v2.esf")
+OUTPUT_PATH = Path("data/gc/regions_occitania_v8.esf")
 
 SLOT_INDEX  = 74        # central_italy slot to repurpose
 OLD_NAME    = "central_italy"
@@ -134,8 +134,47 @@ slot[3].value = (SF_BBOX_MAX_X, SF_BBOX_MAX_Y)
 slot[3].raw   = None
 print(f"  [3] bbox_max: {slot[3].value}")
 
-# [4] areas: keep existing (wrong geometry, but won't crash — cosmetic)
-print(f"  [4] areas: kept as-is ({len(slot[4].children)} items)")
+# [4] areas: has_poly=False approach — no polygon registered in spatial index.
+#
+# Root cause of all previous crashes: every attempt with has_poly=True duplicates or
+# mismatches polygon vertex indices in the European mesh (area_idx=13), causing the
+# engine's campaign-map spatial index to crash at global init for any faction.
+#
+# Fix: keep central_italy's original area structure but update to area_idx=13
+# with has_poly=False and an empty vertex array. No polygon is registered, so
+# no spatial conflict with France. The region is visible in startpos as a political
+# entity and pathfinding works; the campaign map visual outline is absent (acceptable
+# for PoC — correct polygon vertices require mesh-13 rasterization work in ETWPC-16).
+import struct as _struct_areas
+areas_node = slot[4]             # central_italy's original 1-item areas T_RECORD_ARY
+a0 = areas_node.children[0]     # the single area item
+
+a0[2].value = False              # has_poly_data = False → skip polygon registration
+a0[2].raw   = None
+a0[3].value = (SF_BBOX_MIN_X, SF_BBOX_MIN_Y)
+a0[3].raw   = None
+a0[4].value = (SF_BBOX_MAX_X, SF_BBOX_MAX_Y)
+a0[4].raw   = None
+a0[5].value = 13                 # area_idx = 13 (European mesh)
+a0[5].raw   = None
+a0[8].value = 65535              # standard sentinel for active European regions ([8]=193 in vanilla)
+a0[8].raw   = None
+# a0[9] stays 104 (already matches all active European regions)
+
+# Clear the T_U2_ARY vertex indices in the outline — wrong mesh (Italy=570) vertices
+# must not be accessed even for border display purposes.
+outlines_node = a0[7]
+if outlines_node.children:
+    ol0 = outlines_node.children[0]
+    ol0[1].value = (SF_BBOX_MIN_X, SF_BBOX_MIN_Y)
+    ol0[1].raw   = None
+    ol0[2].value = (SF_BBOX_MAX_X, SF_BBOX_MAX_Y)
+    ol0[2].raw   = None
+    # Zero out vertex index array — no mesh-13 vertices defined yet
+    ol0[3].value = ()
+    ol0[3].raw   = _struct_areas.pack("<0H")
+
+print(f"  [4] areas: has_poly=False, area_idx=13, [8]=65535, empty vertex array (no spatial index entry)")
 
 # [5] int prim: -1 for unused regions; update to 2 (same as France) to indicate active region
 slot[5].value = 2
@@ -153,6 +192,18 @@ print(f"  [6] settlement_and_slots: copied from France[70]")
 sas.children[0].value = (TOULOUSE_WX, TOULOUSE_WY)
 sas.children[0].raw   = None
 print(f"  [6][0] capital pos: ({TOULOUSE_WX}, {TOULOUSE_WY})")
+
+# [6][1] settlement boundary polygon (T_F4_ARY)
+#   Always a 4-point diamond centered on the capital with radius ≈ 1.697 world units:
+#   (cx, cy+r), (cx-r, cy), (cx, cy-r), (cx+r, cy)
+#   Previously this was Paris coordinates copied from France — wrong for Toulouse.
+import struct as _struct
+_R = 1.697
+_cx, _cy = TOULOUSE_WX, TOULOUSE_WY
+_diamond = [_cx, _cy+_R,  _cx-_R, _cy,  _cx, _cy-_R,  _cx+_R, _cy]
+sas.children[1].raw   = _struct.pack(f"<{len(_diamond)}f", *_diamond)
+sas.children[1].value = None
+print(f"  [6][1] settlement polygon: 4-point diamond around Toulouse")
 
 # [6][2] slot_descriptions T_RECORD_ARY
 slot_descs = sas.children[2]
@@ -197,20 +248,14 @@ for rk_item in rk_europe.children:
         break
 
 if not renamed_rk:
-    # Not found — add new entry from France's rk item
-    print(f"  '{OLD_NAME}' not in region_keys; appending new '{NEW_NAME}' entry")
-    france_rk = None
-    for rk_item in rk_europe.children:
-        if get_str(rk_item[0]) == "france":
-            france_rk = rk_item
-            break
-    if france_rk:
-        new_rk = deep_copy_esf(france_rk)
-        set_str(new_rk[0], NEW_NAME)
-        new_rk[1].value = (TOULOUSE_WX, TOULOUSE_WY)
-        new_rk[1].raw   = None
-        rk_europe.children.append(new_rk)
-        print(f"  Appended '{NEW_NAME}' to region_keys ({len(rk_europe.children)} total)")
+    # central_italy was never a playable region so it was never in theatres_and_region_keys.
+    # Do NOT append occitania here: the GC campaign overview screen enumerates every entry
+    # in theatres_and_region_keys before startpos is loaded, and an unexpected 78th entry
+    # causes an immediate crash on the GC button click.
+    # occitania will be visible via pathfinding / startpos REGIONS_ARRAY; the region_keys
+    # entry is only needed for the initial GC map overlay labels, which can be added later
+    # once we understand the exact engine validation that happens during that enumeration.
+    print(f"  '{OLD_NAME}' not in region_keys — skipping append (safe: avoid GC-button crash)")
 
 # ─── Write ─────────────────────────────────────────────────────────────────────
 
