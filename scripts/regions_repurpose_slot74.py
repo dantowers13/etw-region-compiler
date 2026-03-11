@@ -134,47 +134,33 @@ slot[3].value = (SF_BBOX_MAX_X, SF_BBOX_MAX_Y)
 slot[3].raw   = None
 print(f"  [3] bbox_max: {slot[3].value}")
 
-# [4] areas: has_poly=False approach — no polygon registered in spatial index.
+# [4] areas: preserve central_italy's original area data verbatim.
 #
-# Root cause of all previous crashes: every attempt with has_poly=True duplicates or
-# mismatches polygon vertex indices in the European mesh (area_idx=13), causing the
-# engine's campaign-map spatial index to crash at global init for any faction.
+# Vanilla central_italy already had has_poly_data=False (a0[2]=False), area_idx=570,
+# sentinel=193, and 39 Italian polygon vertices. The engine ignored this data because
+# flag=-1. Now that flag=2 the engine will process the area but has_poly_data=False
+# means it won't register any polygon in the spatial index — same as before.
 #
-# Fix: keep central_italy's original area structure but update to area_idx=13
-# with has_poly=False and an empty vertex array. No polygon is registered, so
-# no spatial conflict with France. The region is visible in startpos as a political
-# entity and pathfinding works; the campaign map visual outline is absent (acceptable
-# for PoC — correct polygon vertices require mesh-13 rasterization work in ETWPC-16).
-import struct as _struct_areas
+# Only update the bounding boxes to southern France. Leave area_idx=570, sentinel=193,
+# and the 39 Italian vertices untouched — they are from a separate mesh and will NOT
+# conflict with France's mesh-13 polygon.
 areas_node = slot[4]             # central_italy's original 1-item areas T_RECORD_ARY
 a0 = areas_node.children[0]     # the single area item
 
-a0[2].value = False              # has_poly_data = False → skip polygon registration
-a0[2].raw   = None
+# a0[0] = False (already False in vanilla — keep)
+# a0[1] = False (already False in vanilla — keep)
+# a0[2] = False (has_poly_data — already False in vanilla — keep)
 a0[3].value = (SF_BBOX_MIN_X, SF_BBOX_MIN_Y)
 a0[3].raw   = None
 a0[4].value = (SF_BBOX_MAX_X, SF_BBOX_MAX_Y)
 a0[4].raw   = None
-a0[5].value = 13                 # area_idx = 13 (European mesh)
-a0[5].raw   = None
-a0[8].value = 65535              # standard sentinel for active European regions ([8]=193 in vanilla)
-a0[8].raw   = None
-# a0[9] stays 104 (already matches all active European regions)
+# a0[5] = area_idx=570 (original Italian mesh — keep, no conflict with France mesh-13)
+# a0[6] = faces — keep original
+# a0[7] = outlines — keep original (39 Italian vertices, structurally valid for mesh-570)
+# a0[8] = sentinel=193 (vanilla value for inactive European slot — keep)
+# a0[9] = 104 — keep
 
-# Clear the T_U2_ARY vertex indices in the outline — wrong mesh (Italy=570) vertices
-# must not be accessed even for border display purposes.
-outlines_node = a0[7]
-if outlines_node.children:
-    ol0 = outlines_node.children[0]
-    ol0[1].value = (SF_BBOX_MIN_X, SF_BBOX_MIN_Y)
-    ol0[1].raw   = None
-    ol0[2].value = (SF_BBOX_MAX_X, SF_BBOX_MAX_Y)
-    ol0[2].raw   = None
-    # Zero out vertex index array — no mesh-13 vertices defined yet
-    ol0[3].value = ()
-    ol0[3].raw   = _struct_areas.pack("<0H")
-
-print(f"  [4] areas: has_poly=False, area_idx=13, [8]=65535, empty vertex array (no spatial index entry)")
+print(f"  [4] areas: bbox updated to southern France; area_idx=570, sentinel=193, vertices=39 kept from vanilla central_italy")
 
 # [5] int prim: -1 for unused regions; update to 2 (same as France) to indicate active region
 slot[5].value = 2
