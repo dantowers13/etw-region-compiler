@@ -134,33 +134,76 @@ slot[3].value = (SF_BBOX_MAX_X, SF_BBOX_MAX_Y)
 slot[3].raw   = None
 print(f"  [3] bbox_max: {slot[3].value}")
 
-# [4] areas: preserve central_italy's original area data verbatim.
+# [4] areas: build valid polygon from France's southern boundary vertices.
 #
-# Vanilla central_italy already had has_poly_data=False (a0[2]=False), area_idx=570,
-# sentinel=193, and 39 Italian polygon vertices. The engine ignored this data because
-# flag=-1. Now that flag=2 the engine will process the area but has_poly_data=False
-# means it won't register any polygon in the spatial index — same as before.
+# Data model (confirmed from vanilla analysis):
+#   - All flag=2 mainland regions: has_poly=True, area_idx=13, sentinel=65535
+#   - area[6] = faces  (T_RECORD with 1 ESFPrimitive child: u32 triangle vertex indices)
+#   - area[7] = outlines (T_RECORD_ARY; item[0]: closed(bool) bbox_min bbox_max T_U4_ARY)
+#   - Both outline and face arrays use T_U4_ARY (type 0x48, 4 bytes per u32 element)
 #
-# Only update the bounding boxes to southern France. Leave area_idx=570, sentinel=193,
-# and the 39 Italian vertices untouched — they are from a separate mesh and will NOT
-# conflict with France's mesh-13 polygon.
-areas_node = slot[4]             # central_italy's original 1-item areas T_RECORD_ARY
-a0 = areas_node.children[0]     # the single area item
+# Occitania polygon: France's main outline is one contiguous segment in positions 189-473
+# (285 vertices), all at wy <= 332, confirmed by finding exactly 2 crossing points.
+# Entry crossing: outline[188] at (-14.3, 332.2) → v33585 (-13.7, 331.6)
+# Exit crossing:  outline[473] v8036 (47.8, 330.8) → (-48.1, 332.8)
+# Close polygon by fan-triangulating from vertex 0.
+import struct as _struct
 
-# a0[0] = False (already False in vanilla — keep)
-# a0[1] = False (already False in vanilla — keep)
-# a0[2] = False (has_poly_data — already False in vanilla — keep)
+raw_verts  = region_data.children[0].children[0].raw   # global vertex table (T_F4_ARY)
+_n_verts   = len(raw_verts) // 8
+_all_xy    = _struct.unpack_from(f"<{_n_verts*2}f", raw_verts)
+_vx        = _all_xy[0::2]
+_vy        = _all_xy[1::2]
+
+_france    = regions_ary.children[70]
+_fr_ol     = _france[4].children[0][7].children[0][3].value  # France main outline (599 u32 indices)
+SPLIT_WY   = 332.0
+OCC_VERTS  = list(_fr_ol[189:474])   # 285 contiguous southern vertices, all wy <= 332
+
+# Fan triangulation: v0 as fan centre, triangles (v0, v_k, v_{k+1}) for k in 1..n-2
+_v0        = OCC_VERTS[0]
+_faces_idx = []
+for _k in range(1, len(OCC_VERTS) - 1):
+    _faces_idx.extend([_v0, OCC_VERTS[_k], OCC_VERTS[_k + 1]])
+
+areas_node = slot[4]
+a0         = areas_node.children[0]
+
+# has_poly_data = True (required for mainland flag=2 regions)
+a0[2].value = True
+a0[2].raw   = None
+
+# bounding box
 a0[3].value = (SF_BBOX_MIN_X, SF_BBOX_MIN_Y)
 a0[3].raw   = None
 a0[4].value = (SF_BBOX_MAX_X, SF_BBOX_MAX_Y)
 a0[4].raw   = None
-# a0[5] = area_idx=570 (original Italian mesh — keep, no conflict with France mesh-13)
-# a0[6] = faces — keep original
-# a0[7] = outlines — keep original (39 Italian vertices, structurally valid for mesh-570)
-# a0[8] = sentinel=193 (vanilla value for inactive European slot — keep)
-# a0[9] = 104 — keep
 
-print(f"  [4] areas: bbox updated to southern France; area_idx=570, sentinel=193, vertices=39 kept from vanilla central_italy")
+# area_idx = 13 (European mainland mesh, same as France and all flag=2 mainland regions)
+a0[5].value = 13
+a0[5].raw   = None
+
+# faces: replace Italian triangulation with occitania fan triangulation
+faces_prim = a0[6].children[0]
+faces_prim.value = _faces_idx
+faces_prim.raw   = _struct.pack(f"<{len(_faces_idx)}I", *_faces_idx)
+
+# outlines: replace Italian polygon with occitania southern boundary
+ol0       = a0[7].children[0]
+ol0[1].value = (SF_BBOX_MIN_X, SF_BBOX_MIN_Y)
+ol0[1].raw   = None
+ol0[2].value = (SF_BBOX_MAX_X, SF_BBOX_MAX_Y)
+ol0[2].raw   = None
+ol0[3].value = OCC_VERTS
+ol0[3].raw   = _struct.pack(f"<{len(OCC_VERTS)}I", *OCC_VERTS)
+
+# sentinel = 65535 (all active mainland flag=2 regions use this value)
+a0[8].value = 65535
+a0[8].raw   = None
+
+print(f"  [4] areas: has_poly=True, area_idx=13, sentinel=65535")
+print(f"       outline: {len(OCC_VERTS)} vertices (France southern boundary, wy<=332)")
+print(f"       faces: {len(_faces_idx)//3} triangles (fan from v[0]={_v0})")
 
 # [5] int prim: -1 for unused regions; update to 2 (same as France) to indicate active region
 slot[5].value = 2
