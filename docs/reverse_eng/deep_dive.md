@@ -1119,3 +1119,190 @@ front-end ownership map) for the new regions and the two transfers. Untested.
 
 **Result:** `new_regions_unlocked` works in game (user, 2026-10-03): the minors are
 selectable and all eight regions play.
+
+## 9. 2026-10-03: the Canary Islands as a true 206th region
+
+User decisions (memory etw-canaries-decisions): append a **new** region record rather
+than repurpose an unused one; Canaries = `unexplorable` areas 1-4 (x -121..-95,
+y 197..208, Europe grid 2), owner Spain, capital San Cristobal de La Laguna; Madeira
+(`unexplorable` area 0, x -123..-118, y 231..234) moves into Portugal's record. No file
+on disk has 206 regions (vanilla, Lord/URR, DarthMod: 205).
+
+### 9.1 What is sized or indexed per region
+
+Arrays of exactly 205 (scan of all three vanilla files): regions.esf
+`region_data/regions`; startpos `CAI_WORLD_REGIONS`, `CAI_BDI_COMPONENT_BLOCK_OWNS`
+(one block), `CAI_BDI_POOL_DESIRES` record, `CAI_ANALYSER` u4[205],
+`CAI_WORLD_RESOURCE_MOBILES` u4[205] x2 (may be coincidence). pathfinding.esf has none.
+Index references (not lengths): regions.esf quadtree segments `(region, area)` on both
+sides and per-leaf defaults (3.4); pathfinding `grid_data[2].i2_ary` path id -> regions
+index (85 entries) + interior runs / boundary records tagged with path ids (3.1-3.2);
+CAI HLCIs (one per mesh area); DB `regions_tables`, `europe_lookup.tga` palette.
+
+Moving areas out of `unexplorable` shifts its later area indices, so every
+`(unexplorable, area)` reference (quadtree, HLCIs, any area-index field) is remapped,
+not just the moved ones.
+
+### 9.2 Plan: make it dormant first, then reactivate it
+
+1. **M1, 206 records, dormant.** regions.esf: append record 205 `canary_islands`
+   (type land, theatre flag -1 like the void regions) holding areas 1-4; remap the
+   quadtree; append a CAI_WORLD_REGIONS entry and extend the other 205-arrays. No
+   settlement, no pathfinding change. Load test answers "is 205 hardcoded?" cheaply.
+2. **M2, pathfinding + Madeira.** New path id (86th `i2_ary` entry -> index 205);
+   relabel the islands' interior runs and boundary records; Madeira's area and cells
+   to Portugal. Load + move-a-ship test.
+3. **M3, reactivate.** The 206th record is now a dormant region like the eight, so
+   `reactivate_region.py` gives it a settlement (Spain, La Laguna), footprints,
+   transport node, DB rows, lookup colour (needs a free palette slot), preopen entries.
+
+### 9.3 M1 build and the first 206-region crash
+
+`scripts/add_region.py` (M1): regions.esf record 205 `canary_islands` (dormant copy of
+`central_italy`, areas = unexplorable 1-4), Madeira -> portugal area 2, unexplorable 61 ->
+56 areas; packed `region<<16|area` references remapped (36 quadtree leaf defaults, 2,935
+segment sides, 131 outline connectivity entries). startpos: CAI_WORLD_REGIONS[205] (ai id
+from IdPool, BDI caches cleared), HLCIs 66-69 retargeted / 65 to portugal / the rest
+renumbered, boundary 6909 (unexplorable-atlantic_ocean_e) handed to the new region,
+THEATRE 34 [3] membership. No DB row (dormant regions have none: regions_tables has
+158/175 rows; wilderness_*, central_italy absent).
+
+`canaries_m1` crashed on Grand Campaign launch at **Empire.exe+0x8ada40** (dump 6380,
+`mov eax,[ecx+0x10c]`, ecx = 0). Trace: a CAI region object (key [obj+0x20] = 91000124,
+the new region) looks itself up in a hash map (manager+0xfc, `key ^ 0x4a545eed % buckets`,
+20-byte buckets, nodes `[prev,next,key,value]`) holding **205** entries keyed by CAI region
+ai id; values are per-region analysis objects. Its source:
+
+* `CAI_INTERFACE/CAI_BDI_POOL` desire id **11** owns exactly one belief per region:
+  BLOCK_OWNS `[belief id, 11, 0.0, 0.0, 1]` x205, count [17] = 205, id list [19],
+  CAI_ANALYSER [0] = ids, [1] = `(region ai, belief id)` pairs. Vanilla ids 7638..7842 in
+  region order.
+* each belief: type 146, [10] = `[11, region index]`, `CAI_BORDER_PATROL_ANALYSIS`
+  `[region ai, SPECIFIC_AREAS[(AREA_SPECIFIC[region ai, area index, PATROL_POINTS[(x, y,
+  [neighbour region ai])], x, y])]]` - per-AREA entries, so they move/renumber with areas.
+
+The other 205-counts are coincidences (REGION_RECRUITMENT_MANAGER = 137 regions + 68
+slots; the 205-item CAI_INTERFACE_MANAGERS desire pool mixes desire types). M1 bug also
+fixed: the AI position was the centre of unexplorable's remaining bbox (671.9, 119.6).
+Build `canaries_m1b` adds the belief (id 91000125, desire 11 -> 206; area entries: 4 to
+the Canaries, 1 to portugal, 21 renumbered). Untested.
+
+**Result:** `canaries_m1b` LOADS (user, 2026-10-03): 206 regions work, so the region count is
+not hardcoded. Islands have no tooltip and the region shows blank in the Lists panel (no
+loc/DB yet); units can land and move on them (cells still carry unexplorable's path id).
+
+### 9.4 M2: a new path id in the Europe grid
+
+Path id space of a pathfinding grid with n regions (verified on all 7 vanilla grids:
+sea == n everywhere): `0..n-1` regions (`grid_data[10]` i2: pid -> regions.esf index),
+`n` = sea, `n+1..` = one id per border group (Europe: 86..268 for the 183 groups, e.g.
+110 gibraltar/portugal border cells), `1022/1023` edge markers. Interior run and
+zero-record header cells (T_U2) carry a region pid or n; boundary records of every type
+share the space (type 0/6/7 regions + borders + sea, types 1/4/5 only n, 2/3 1023). Type-0
+ids < n agree with a neighbouring interior cell's pid 93% of the time.
+`grid_data[8]`, `[9]` = n (u16). `grid_data[11]` u2 = n 1-based pids in an order close to,
+but not exactly, the regions' southern edge (ties and a few swaps unexplained), then the
+border groups of 1-based region pids. startpos `CAMPAIGN_PATHFINDER/PATHFINDING_GRID[g]`
+item [7] = one bool per path id (268 in grid 2); its 173,278-word list after the path
+count holds obstacle outline polygons in fixed world coords (not path ids).
+
+Islands and Madeira: every land cell is a header cell; their land records are type 0
+with unexplorable's pid 7. M2 (`add_region.py --pathfinding-esf`): sea and border ids +1
+(8,334 cells/records), island records 7 -> 85 (19), Madeira 7 -> portugal's 22 (6), i2
++= [205], counts 86, order list gets 86 at slot 8 (by southern edge), startpos flags
+269 (new entry copied from pid 7). Cell structure unchanged, so obstacle node sequence
+ids are untouched. Build `canaries_m2`. Untested.
+
+**M2 result:** `canaries_m2` loads; Canaries and Madeira are navigable, but fleets could not
+pass the **Strait of Gibraltar**. Cause: startpos `OBSTACLE_BOUNDARIES` entries
+`[n, (a, b) * n, cellid, 0]` are per-cell copies of boundary records (same packing, same
+path id space) for every obstacle-touched cell; they kept sea = 85, now the Canaries' id,
+around the Gibraltar fort. `canaries_m2b` shifts them too (15,269 records; none on
+unexplorable's pid). Rule: a path-id renumber must cover pathfinding.esf AND every
+startpos OBSTACLE_BOUNDARIES entry of that grid.
+
+**M2 result:** `canaries_m2b` - everything navigable, Gibraltar open (user, 2026-10-04).
+
+### 9.5 M3: the Canaries settlement (no footprint yet)
+
+Pipeline for 206 regions: `add_region.py` on the vanilla files (`out/canaries_base`:
+dormant record + M2 relabel) -> `reactivate_region.py` for all nine regions in one pass
+(one pack, one localisation.loc) -> `unlock_factions.py`.
+
+`reactivate_region.py` additions: `RegionSpec.positions` (explicit capital/slot points
+for regions URR lacks), `RegionSpec.footprints` (per-region opt-out), a new region's
+lookup colour claims a palette entry no pixel uses (from the top: 254; vanilla
+europe_lookup uses 150 of 256 entries) and paints every pixel inside its outline (the
+islands are neutral grey-green 152/153, not void), `LOOKUP_GIFTS` paints Madeira's 7
+neutral pixels portugal's colour. Spec: template `naples` (Spanish, minor settlement,
+has town and wine slots; sardinia has no town slot), owner spain, culture
+sc_european_south, emergent `spanish_rebels`, La Laguna (-115.50, 202.38, NE Tenerife),
+town Las Palmas (-109.86, 199.57), wine Lanzarote (-96.73, 206.54); trade node 295 with
+a link to sea waypoint 272.
+
+Footprint: deferred (user choice). Vanilla island settlements (Malta) put the slot
+outline (type 7) inside coastal header cells whose records partition the cell (types
+0 land, 1 sea, 2 impassable, 6 ?, 7 slot; corners E0..E3; per-record passable byte and
+20-bit field, 8-byte cell header - semantics unknown), so the interior-block transplant
+cannot be used and a whole-island Malta copy would reshape the coastline. The test asks
+whether a capital inside existing coastal land records traps armies at all.
+Build `canaries_m3_unlocked`. Untested.
+
+**M3 result:** `canaries_m3_unlocked` loads; the first end turn crashes at
+**Empire.exe+0x8df200** (dump 22468): fn +0x8df140 builds a list of region-group
+analyses from an object, then for each entry of `this` (+0x10c count, +0x110 data) finds
+`[entry+0xfc]` in that list and erases it with no not-found check -> erase(end) runs off
+the heap. `this` = belief 18267 CAI_REGION_TARGET_PATHS_ANALYSIS (type 340) -> 18268
+CAI_RTPA_REGION_GROUP_INFO (341) -> 7399 CAI_BASIC_REGION_GROUP_ANALYSIS (type 81 =
+Austria's group: austria, bohemia, hungary, croatia, ...; unchanged from vanilla). The
+live list held a runtime-created group (id 80692) instead: the end turn rebuilt the
+region groups and a target-path analysis kept the old group id. Neither the eight
+reactivations nor this build add new regions to region groups. Bisect build
+`bisect_dormant206_unlocked` = same pipeline with canary_islands left dormant.
+
+**Bisect:** `bisect_dormant206_unlocked` ends turns cleanly, so settling the Canaries is the
+trigger. Cause: a CAI_WORLD_REGIONS wrapper's [21] lists the region's memberships, and
+`clear_bdi` had emptied it for the new region:
+
+* `CAI_BASIC_REGION_GROUP_ANALYSIS` (belief type 81), owned by desire **5** (113 groups;
+  BLOCK_OWNS `[id, 5, 0.0, 0.0, 1]`, count [17], ids [19], CAI_ANALYSER [0] ids and [1]
+  205 `(region ai, group)` pairs - every region maps to a group). Group record: [0] core
+  regions, [1] neighbour regions, [2] neighbouring CAI factions, [3] owner CAI faction
+  (0 = unowned), [4] flag, [5] float, [7] centre, [8]/[9] bbox w/h. Per owner, contiguous:
+  portugal's 7388 = [portugal] / [atlantic_ocean_e, spain]; dormant central_italy's 7400
+  = [central_italy] alone. Belief [10] = [desire, index in its BLOCK_OWNS], [20] = [region
+  ai]. Banjar stayed in its unowned groups after the Dutch took it and that plays, so a
+  region in the "wrong" group is tolerated; a region in none is not.
+* `CAI_REGION_OCCUPANCY_ANALYSIS` (type 159), desire **20** (189), same registration;
+  record [0] = region ai.
+
+`add_region_memberships` clones the dormant template's group (one-region, centre and
+extents = the new bbox) and occupancy beliefs and registers them (desire 5 -> 114,
+20 -> 190). Still empty on the new region: wrapper [10]/[14], ~15 per-manager beliefs
+(CAI_REGION_MILITARY_STRENGTH etc. in the CAI_INTERFACE_MANAGERS pools). Build
+`canaries_m3b_unlocked`. Untested.
+
+**M3b result (user, 2026-10-04):** `canaries_m3b_unlocked` - no crash over several end
+turns, but **armies are trapped in La Laguna** (an agent/priest can enter and leave).
+So a capital inside existing coastal land records is not enough: the settlement needs a
+slot outline (type 7) in the pathfinding grid, as on land.
+
+### 9.6 What a coastal footprint needs (open)
+
+* Whole-island transplant (Malta) is out: the Canary islands touch cell-to-cell (area 0 and
+  1 share column 33, areas 2 and 3 row 32), so no template block with a pure-sea ring fits.
+* "Squaring" the island into interior land cells is out: vanilla never has a land run cell
+  next to a sea run cell (0 of 23,436 land-run neighbour pairs); coasts always live in
+  header cells.
+* Generating records in place: a cell's records partition it (types 0 land, 1 sea, 2/3
+  marker 1023, 6 ?, 7 slot), vertices + corner markers E0..E3. The 8-byte cell header looks
+  like terrain samples (interior run cells carry the same patterns: 57ff57ffff57ff57 x6,545,
+  ffffffffffffffff, 5757..., 1f1f...), so an edited cell can probably keep it. Per record,
+  `passable_part` (8 bits) and `unknown2` (20 bits) are shared across types (241/4113 is the
+  top value for both type 0 and type 1: 708 and 583 records) and so describe the polygon's
+  place in the cell, not terrain - but they are NOT simply "half-edges covered" (per-bit
+  agreement 0.39-0.82 over ~1,800 records). Next: fit them against richer features
+  (corners included, edge intervals, vertex order), or read the engine's loader.
+
+**M3b checks (user):** tooltip "Canary Islands", Lists panel, minimap colour, Madeira as
+Portugal, La Laguna / Las Palmas / wine slot all correct; only the army trap remains.

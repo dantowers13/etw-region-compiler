@@ -121,6 +121,10 @@ class RegionSpec:
     # working (the Lord mod's URR). The donor's pathfinding grid must be the vanilla
     # one, which URR's is, so every cell sequence index in it is still valid here.
     obstacle_donor: str = "../data/campaigns/Lord_main/startpos.esf"
+    # Regions URR does not have (a new 206th region, add_region.py): explicit positions,
+    # our slot key (or "capital") -> (x, y), replacing the donor lookup.
+    positions: dict[str, tuple[float, float]] | None = None
+    footprints: bool = True           # False: no settlement/slot footprint (--footprints skips it)
 
 
 # Names are ~1700 (approved 2026-10-01); URR's legendary/anachronistic ones are replaced.
@@ -259,6 +263,26 @@ SPECS: dict[str, RegionSpec] = {s.name: s for s in [
         culture="sc_tribal_american", population=(1500, 1875, 1500), colour=(162, 61, 61),
         religion=(("rel_animist", 0.9), ("rel_catholic", 0.1)),
     ),
+    RegionSpec(
+        # The 206th region: unexplorable's Canary areas split off by add_region.py
+        # (deep_dive 9). URR has no Canaries, so positions are explicit (inland points
+        # >= 0.6 from the coast; area 0 Tenerife, 1 Gran Canaria, 3 Lanzarote). The
+        # islands are all coastal pathfinding cells: no clean block for a footprint yet.
+        name="canary_islands", theatre_flag=2, pf_grid=2, theatre_name="europe", template="naples",
+        region_display="Canary Islands", settlement_key="settlement:canary_islands:la_laguna",
+        settlement_display="La Laguna", donor_settlement_key="",
+        slot_map={
+            "town:canary_islands:las_palmas": ("town:canary_islands:las_palmas", "Las Palmas", "town"),
+            "wine:canary_islands:lanzarote": ("wine:canary_islands:lanzarote", "Lanzarote Malvasia", "wine"),
+        },
+        positions={"capital": (-115.499, 202.380),
+                   "town:canary_islands:las_palmas": (-109.858, 199.567),
+                   "wine:canary_islands:lanzarote": (-96.729, 206.543)},
+        footprints=False,
+        owner_faction="spain", emergent_nation="spanish_rebels", rebels_name="Canarian Rebels",
+        culture="sc_european_south", population=(100000, 125000, 100000), colour=(241, 196, 15),
+        religion=(("rel_catholic", 1.0),),
+    ),
 ]}
 
 
@@ -268,9 +292,13 @@ def resolve_spec(spec: RegionSpec, regions_root, donor_regions_root, tpl_db_cont
         regs = root.children[3].children[3]
         return sas_of(regs.children[[region_name(r) for r in regs.children].index(name)])
 
-    dsas = sas_by_name(donor_regions_root, spec.name)
-    spec.capital = tuple(dsas.children[0].value)
-    donor = {sl[0].value: tuple(sl[2].value) for sl in dsas.children[2].children}
+    if spec.positions is not None:
+        spec.capital = spec.positions["capital"]
+        donor = {dkey: spec.positions[key] for dkey, (key, _, _) in spec.slot_map.items()}
+    else:
+        dsas = sas_by_name(donor_regions_root, spec.name)
+        spec.capital = tuple(dsas.children[0].value)
+        donor = {sl[0].value: tuple(sl[2].value) for sl in dsas.children[2].children}
     missing = set(spec.slot_map) - set(donor)
     assert not missing, f"{spec.name}: donor has no slot(s) {sorted(missing)}"
     # settlement slots follow the TEMPLATE's layout (minor town vs major city), so
@@ -1127,6 +1155,9 @@ def place_footprints(specs, pf_root, sp_root, regions_root) -> dict[int, AreaGri
     src = grid(src_gi)
     reserved: dict[int, set] = {}
     for spec in specs:
+        if not spec.footprints:
+            print(f"footprint {spec.name}: none (spec.footprints = False)")
+            continue
         g = grid(spec.pf_grid)
         if spec.pf_grid not in reserved:
             osys = ObstacleSystem(find(sp_root, "CAMPAIGN_PATHFINDER").children[0].children[spec.pf_grid])
@@ -1351,6 +1382,11 @@ def read_db_rows(path: Path, n_strings: int, n_u32: int) -> list[tuple]:
 # ─── region overlay / minimap lookup ─────────────────────────────────────────
 
 LOOKUP_VOID = (0, 63, 0)     # the dark green vanilla paints over land that is no region
+# Grey-green vanilla paints over unexplorable's Atlantic islands (palette 152/153).
+LOOKUP_NEUTRAL = ((158, 173, 156), (159, 174, 157))
+# Areas add_region.py gave to an existing region: paint its neutral pixels in that
+# region's colour (Madeira -> portugal).
+LOOKUP_GIFTS = {"portugal": (96, 126, 89)}
 
 
 def repaint_lookup(regions_root, specs, tga: Path, theatre_flag: int = 2) -> bytes | None:
@@ -1368,10 +1404,19 @@ def repaint_lookup(regions_root, specs, tga: Path, theatre_flag: int = 2) -> byt
     (x0, y0), (x1, y1) = th.children[1].value, th.children[2].value
     sx, sy = (x1 - x0) / w, (y1 - y0) / h
     void = pal.index(LOOKUP_VOID)
+    pix_used = set(d[off:off + w * h])
     changed = 0
     for spec in specs:
         if spec.theatre_flag != theatre_flag:
             continue
+        if tuple(spec.colour) not in pal and spec.positions is not None:
+            # a new region's colour: claim a palette entry no pixel uses (vanilla
+            # europe_lookup uses 150 of 256; the rest are spare black/white entries)
+            i = next(i for i in reversed(range(cmlen)) if i not in pix_used and i != void)
+            pal[i] = tuple(spec.colour)
+            d[18 + idl + 3 * i: 21 + idl + 3 * i] = bytes(spec.colour[::-1])
+            pix_used.add(i)
+            print(f"lookup: {spec.name} colour {spec.colour} -> palette entry {i}")
         if tuple(spec.colour) not in pal:
             print(f"lookup: {spec.name} colour {spec.colour} not in the palette; not painted")
             continue
@@ -1383,11 +1428,31 @@ def repaint_lookup(regions_root, specs, tga: Path, theatre_flag: int = 2) -> byt
             wy = y1 - (y + 0.5) * sy
             for x in range(w):
                 o = off + row * w + x
-                if d[o] == void and inside(x0 + (x + 0.5) * sx, wy):
+                # a new region (explicit positions) owns every pixel inside its outline;
+                # a reactivated one only the void-coloured ones
+                if (spec.positions is not None or d[o] == void) and inside(x0 + (x + 0.5) * sx, wy):
                     d[o] = idx
                     n += 1
         if n:
             print(f"lookup: {spec.name} painted {n} void pixels")
+        changed += n
+    for name, colour in LOOKUP_GIFTS.items():
+        names = [region_name(r) for r in regions_root.children[3].children[3].children]
+        if name not in names or tuple(colour) not in pal:
+            continue
+        idx, neutral = pal.index(tuple(colour)), {i for i, c in enumerate(pal) if c in LOOKUP_NEUTRAL}
+        inside = region_ring_inside(regions_root, name)
+        n = 0
+        for y in range(h):
+            row = (h - 1 - y) if not desc & 0x20 else y
+            wy = y1 - (y + 0.5) * sy
+            for x in range(w):
+                o = off + row * w + x
+                if d[o] in neutral and inside(x0 + (x + 0.5) * sx, wy):
+                    d[o] = idx
+                    n += 1
+        if n:
+            print(f"lookup: {name} painted {n} neutral pixels (areas from add_region.py)")
         changed += n
     return bytes(d) if changed else None
 
