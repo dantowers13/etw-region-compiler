@@ -555,7 +555,8 @@ def check_geometry(regions_root, pf_root, spec: RegionSpec) -> None:
     ox, oy, cs = gd.children[0].value / FIXED, gd.children[1].value / FIXED, gd.children[4].value / FIXED
     cols = gd.children[5].value
     i2 = list(gd.children[10].value)
-    pid = i2.index(idx)
+    order = list(gd.children[11].value)[:len(i2)]
+    pid = order.index(i2.index(idx) + 1)          # AreaGrid.pid_of (deep_dive 9.10)
     owner = {}
     pos = 0
     for item in gd.children[12].children:
@@ -570,10 +571,8 @@ def check_geometry(regions_root, pf_root, spec: RegionSpec) -> None:
         cell = int((y - oy) / cs) * cols + int((x - ox) / cs)
         o = owner[cell]
         on_cells = o == pid or o == "boundary-cell"
-        # Vanilla's cell labels are not always this region's local id: every
-        # wilderness_khiva cell carries id 18 (which the id table maps to spain) and its
-        # own id 17 has no cells. URR ships Khiva at these exact positions on this
-        # exact pathfinding.esf, so being inside the outline is the hard requirement.
+        # being inside the outline is the hard requirement; a cell of another label
+        # (a slot near a border) only warns
         status = "OK" if inside(x, y) and on_cells else ("WARN cell labelled elsewhere" if inside(x, y) else "BAD")
         print(f"  geometry {label:52} inside={inside(x, y)!s:5} cell-owner={o!s:14} {status}")
         assert inside(x, y), f"{label} at {(x, y)} is outside {spec.name}"
@@ -1166,7 +1165,8 @@ def place_footprints(specs, pf_root, sp_root, regions_root) -> dict[int, AreaGri
         inside = region_ring_inside(regions_root, spec.name)
 
         def label(xy):
-            # the label the cells around xy actually carry (Khiva's carry spain's, 8.12)
+            # the label the cells around xy actually carry (a slot near a border may sit on
+            # a neighbour's cells)
             r, c = g.cell_of(*xy)
             cnt = Counter(g.kind(rr, cc)[1] for rr in range(r - 3, r + 4) for cc in range(c - 3, c + 4)
                           if g.kind(rr, cc)[0] != "hdr")

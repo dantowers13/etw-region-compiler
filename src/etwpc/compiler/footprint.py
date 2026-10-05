@@ -70,6 +70,7 @@ class AreaGrid:
         self.cols = ch[5].value
         self.rows = ch[6].value
         self.i2 = list(ch[10].value)
+        self.order = list(ch[11].value)[:len(self.i2)]
         self.gc: ESFNode = ch[12]
         self.vlist = list(self.vlist_prim.value)
         self.vx = [it[0].value / FIXED for it in self.verts_node.children]
@@ -103,6 +104,17 @@ class AreaGrid:
 
     def cell_of(self, x: float, y: float) -> tuple[int, int]:
         return int((y - self.oy) / self.cs), int((x - self.ox) / self.cs)
+
+    # ── path id <-> region ───────────────────────────────────────────────
+
+    def region_of(self, pid: int) -> int:
+        """regions.esf index of a region path id. Not i2[pid]: grid_data[11] starts with
+        a permutation of 1..n giving each path id's 1-based slot in i2 (deep_dive 9.10;
+        vanilla swaps e.g. palestine/tripoli and rotates gibraltar/khiva/spain)."""
+        return self.i2[self.order[pid] - 1]
+
+    def pid_of(self, region_idx: int) -> int:
+        return self.order.index(self.i2.index(region_idx) + 1)
 
     def kind(self, r: int, c: int):
         """('run', pid) | ('hdr0', pid) zero-record header | ('hdr', None) records."""

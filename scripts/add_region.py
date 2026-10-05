@@ -163,7 +163,7 @@ def split_regions_esf(root) -> tuple[dict[int, int], dict]:
         return out
     info = {"src_idx": si, "new_idx": new_idx, "names": names + [NEW_REGION], "keep": keep, "gifts": gifts,
             "new_nb": neighbours(new_idx), "src_nb": neighbours(si),
-            "centre": centre, "moved_boxes": moved_boxes, "new_south": rec[2].value[1], "regions_root": root,
+            "centre": centre, "moved_boxes": moved_boxes,
             "new_bbox": (tuple(rec[2].value), tuple(rec[3].value))}
     return remap, info
 
@@ -257,22 +257,24 @@ PF_MARKERS = {1022, 1023}     # path ids that are edge markers, not region / sea
 def relabel_pathfinding(pf_root, sp, info: dict) -> None:
     """Milestone M2: give the new region its own path id in the Europe grid.
 
-    Path id space of a grid with n regions (deep_dive 9.4): 0..n-1 regions (i2[pid] =
-    regions.esf index), n = sea, n+1.. = one id per border group, 1022/1023 markers.
+    Path id space of a grid with n regions (deep_dive 9.4): 0..n-1 regions, n = sea,
+    n+1.. = one id per border group, 1022/1023 markers. A region pid's regions.esf
+    index is i2[order[pid] - 1], order = the first n entries of grid_data[11]
+    (deep_dive 9.10), so the new pid gets the last i2 slot and the last order entry.
     Interior run / zero-record header cells carry a region pid or n; boundary records
     of every type use the same space (types 1, 4, 5 only ever n). Adding a region
     therefore appends i2 and shifts sea and every border id up by one. The cell
     structure does not change, so startpos obstacle node sequence ids stay valid;
-    startpos keeps one bool per path id (grid item [7]), which gets an entry too."""
+    startpos keeps one bool per path id (grid item [8]), which gets an entry too."""
     from etwpc.compiler.footprint import AreaGrid
     from etwpc.io.esf_types import BoundaryEntry
 
     g = AreaGrid(pf_root.children[0].children[PF_GRID])
     n = len(g.i2)
     assert g.gd.children[8].value == g.gd.children[9].value == n
-    src_pid = g.i2.index(info["src_idx"])
+    src_pid = g.pid_of(info["src_idx"])
     new_pid = n
-    gift_pid = {a: g.i2.index(ti) for a, (ti, _) in info["gifts"].items()}
+    gift_pid = {a: g.pid_of(ti) for a, (ti, _) in info["gifts"].items()}
 
     def shifted(pid):
         return pid + 1 if n <= pid < min(PF_MARKERS) else pid
@@ -319,18 +321,21 @@ def relabel_pathfinding(pf_root, sp, info: dict) -> None:
     assert relabel["new"], "no island records relabelled"
 
     ch = g.gd.children
-    set_list(ch[10], g.i2 + [info["new_idx"]])
+    g.i2.append(info["new_idx"])
+    set_list(ch[10], g.i2)
     for k in (8, 9):                                  # u16 counts
         ch[k].value, ch[k].raw = n + 1, b""
-    # u2: n path ids (1-based, ordered roughly by the region's southern edge), then
-    # border groups of 1-based region pids (unchanged: the islands have no land border)
+    # u2: per path id its 1-based i2 slot, then the border groups as [count, 1-based i2
+    # slots...] (unchanged: the islands have no land border). The new pid maps to the new
+    # last slot. Inserting it by southern edge (canaries_m2..m4) shifted every later pid
+    # onto its predecessor's region: spain's cells -> wilderness_khiva, gibraltar's ->
+    # malta, the islands -> iceland (deep_dive 9.10).
     u2 = list(ch[11].value)
     order, groups = u2[:n], u2[n:]
-    regs = info["regions_root"].children[3].children[3].children
-    south = info["new_south"]
-    pos = sum(1 for p in order if regs[g.i2[p - 1]][2].value[1] <= south)
-    order.insert(pos, new_pid + 1)
+    order.append(n + 1)
     set_list(ch[11], order + groups)
+    g.order = order
+    assert g.region_of(new_pid) == info["new_idx"] and g.region_of(src_pid) == info["src_idx"]
     g.serialize()
 
     # startpos: obstacle cells keep their own copy of the cell's boundary records,
@@ -360,7 +365,7 @@ def relabel_pathfinding(pf_root, sp, info: dict) -> None:
     assert len(fl) >= n + 1, f"startpos path flags {len(fl)} < sea id {n}"
     fl.insert(new_pid, fl[src_pid])
     flags.value, flags.raw = fl, b""
-    print(f"pathfinding grid {PF_GRID}: {NEW_REGION} path id {new_pid} (order slot {pos}); sea {n}->{n + 1}, "
+    print(f"pathfinding grid {PF_GRID}: {NEW_REGION} path id {new_pid} (i2 slot {n}); sea {n}->{n + 1}, "
           f"border ids +1 ({shifts} cells/records); relabelled records {relabel}; startpos path flags {len(fl)}")
 
 
