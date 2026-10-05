@@ -722,6 +722,7 @@ into one `out/new_regions/` with one `new_regions.pack`. Facts that shaped it:
   spain, and Khiva's own id 17 has no cells. URR ships Khiva at these positions on the
   same pathfinding.esf, so the geometry check now hard-fails only outside the outline.
   Open question for the in-game test: does the engine attribute those cells to Spain?
+  **Corrected in 9.10:** the id table is read through `grid_data[11]`; pid 18 is Khiva's.
 * Localisation: `text\localisation.loc` (vanilla patch_en copy + our keys) ships in the
   movie pack. Keys: `regions_onscreen_<region>`,
   `start_pos_settlements_onscreen_name_<settlement key>`,
@@ -1202,8 +1203,9 @@ share the space (type 0/6/7 regions + borders + sea, types 1/4/5 only n, 2/3 102
 ids < n agree with a neighbouring interior cell's pid 93% of the time.
 `grid_data[8]`, `[9]` = n (u16). `grid_data[11]` u2 = n 1-based pids in an order close to,
 but not exactly, the regions' southern edge (ties and a few swaps unexplained), then the
-border groups of 1-based region pids. startpos `CAMPAIGN_PATHFINDER/PATHFINDING_GRID[g]`
-item [7] = one bool per path id (268 in grid 2); its 173,278-word list after the path
+border groups of 1-based region pids (**wrong, see 9.10**: per pid its 1-based i2 slot, and
+the groups hold i2 slots). startpos `CAMPAIGN_PATHFINDER/PATHFINDING_GRID[g]`
+item [8] = one bool per path id (268 in grid 2); its 173,278-word list after the path
 count holds obstacle outline polygons in fixed world coords (not path ids).
 
 Islands and Madeira: every land cell is a header cell; their land records are type 0
@@ -1306,3 +1308,257 @@ slot outline (type 7) in the pathfinding grid, as on land.
 
 **M3b checks (user):** tooltip "Canary Islands", Lists panel, minimap colour, Madeira as
 Portugal, La Laguna / Las Palmas / wine slot all correct; only the army trap remains.
+
+### 9.7 Decoding the cell records (progress, 2026-10-04)
+
+* **Corner markers** in a record's entry list: `E0 = (0,0)` bottom-left, `E1 = (0,2)`
+  top-left, `E2 = (2,0)` bottom-right, `E3 = (2,2)` top-right, in cell-local units. With
+  this mapping 99.9% of 14,021 sampled records are valid polygons inside their cell (other
+  permutations ~51%). Records are closed polygons, not polylines.
+* **`passable_part` (8 bits) = 8-neighbour connectivity mask**, ~99.99% over 15,338
+  records: bit0 right edge, bit1 corner E1, bit2 top edge, bit3 corner E3, bit4 corner E0,
+  bit5 bottom edge, bit6 corner E2, bit7 left edge (set when the polygon touches that edge /
+  contains that corner, i.e. which neighbouring cells it can reach).
+* **`unknown2` (20 bits)**: five nibbles; nibbles 0/1/3/4 line up with bottom/left/right/
+  top (zero when the polygon does not touch that edge, values 1-5), nibble 2 ranges 0-14
+  (type 0 mostly 0 or 2). "Number of separate stretches along the edge" fits only 42.5% of
+  47,798 records (grids 1+2), and "index of the neighbour cell's matching record" does not
+  fit the samples either. Still open, as are the 8 header bytes (run cells share the same
+  patterns, so probably terrain samples).
+
+Plan: when a generator reproduces passable_part, unknown2 and the header for every vanilla
+header cell from its polygons alone (100% self-test), use it to cut a slot octagon (type 7)
+out of Tenerife's land record in place.
+
+### 9.8 Coastal footprints: encoding decoded, generator built
+
+`unknown2` decoded: five nibbles `[bottom, left, inner, right, top]`. `inner` = bitmask over
+the ranks of the cell's records of the polygon's class that share a boundary stretch with
+it; an edge nibble = the same kind of mask over the neighbour cell's records whose stretch
+along the shared edge overlaps this polygon's (1 if the neighbour is a run cell, 0 if the
+polygon does not touch that edge); masks keep 4 bits. Classes: land {0,6,7}, sea {1,4,5,7},
+type 7 ranks over all live records (a slot outline is reachable from land and sea); dead
+{2,3} have pass 0 / unknown2 0. Over grid 2's 31,126 live records the rules reproduce
+both fields for 99.25% (grid 1: 97.0%; misses mostly types 4/5/6). Around Tenerife: 117 of
+117 cells reproduced exactly. Rings run counter-clockwise. The Pensa template confirms it:
+slot outline = octagon straddling a cell edge, one type-7 half + the land remainder per
+cell, headers unchanged (terrain).
+
+`src/etwpc/compiler/coastal.py`: `CellView` decodes cells, `compute_fields` /
+`self_test` apply the rules, `find_site` finds the nearest cell edge (horizontal or
+vertical) where an octagon fits inside one land record of the region's path id in both
+cells (margin tested on the grown half, since the half sits on the shared edge),
+`cut_footprint` splits it into the two type-7 halves, subtracts it from the land records,
+re-encodes polygons (corner markers, shared fixed-point vertices) and recomputes the
+fields of the two cells and their 4-neighbours. `reactivate_region.py` uses it for
+`RegionSpec.footprints = "coastal"`, refusing to edit if the self-test fails near a site.
+Note: the pathfinding coastline does not match the regions.esf outline closely (Tenerife's
+walkable land is x -120..-114), so sites are searched around the desired points.
+
+Canaries (`canaries_m4_unlocked`): La Laguna (-116.3, 202.0), Las Palmas (-110.0, 199.3,
+vertical edge), resource moved to Fuerteventura (wheat, -100.0, 201.4, small octagon;
+Lanzarote has no room). Untested. (The octagon cutter is superseded by v2, 9.11; the field
+rules above are unchanged.)
+
+### 9.9 `canaries_m4` result and the next session's plan (2026-10-04, night)
+
+**Result (user):** no crashes. Armies **created in** La Laguna can leave and re-enter (the
+coastal footprint works). But (a) **troops can no longer be landed on the islands** from
+ships (worked in m2b/m3b), and (b) **armies cannot enter Gibraltar or the ports next to
+it** unless they started in Gibraltar.
+
+#### A. Landing on the islands broke
+
+Only the coastal cut changed island cells since m3b, so it is the cause. Hypotheses, most
+likely first:
+
+1. **The cell header holds record indices.** `cut_footprint` inserts the type-7 half right
+   after the land record, shifting every later record's index by one, and keeps the old
+   8-byte header. Coastal headers carry small values (0x01, 0x03, 0x13, 0x14, ...) next to
+   0x1f/0x57/0xff, while interior cells carry only terrain-like patterns: those small values
+   are probably per-direction pointers to the record a landing/coast transition uses.
+   *Experiment:* in vanilla coastal cells, check whether each small header byte is a valid
+   record index and which record type/edge it points at (8 bytes = 8 neighbour directions,
+   like `passable_part`?). *Cheap fix to try first:* append the type-7 records at the END of
+   the cell's record list (no index shift), recompute fields, rebuild.
+2. **Sea-to-land connectivity is encoded somewhere we rewrote.** The sea class ranks
+   exclude land, so `unknown2` never links sea and land polygons; landing must use another
+   link (header, a type-2 coast record, or shared vertices). *Experiment:* diff the edited
+   cells and their neighbours before/after the cut (every record's a/b, entries and the
+   header) and list anything besides the intended records that changed.
+3. **The new land polygon lost its coastline vertices' identity** (re-encoded vertex ids).
+   *Check:* after the cut, every coastline vertex of the land record must keep its old
+   vertex index; `encode` only reuses ids from the host's own entries, so confirm none were
+   re-added.
+
+*Test:* land an army on Tenerife, Gran Canaria and Fuerteventura (each has one edited cell
+pair) and on an unedited island cell if possible; re-embark.
+
+#### B. Gibraltar and its neighbouring ports
+
+Not yet known when this started. Bisect with builds that already exist (no rebuild needed):
+
+| build | contains | tells us |
+|---|---|---|
+| `canaries_m2b` (M2 only, on the 8-region build) | path-id renumber + startpos obstacle shift | if broken here, the renumber/obstacle shift is the cause |
+| `bisect_dormant206_unlocked` | clean pipeline, Canaries dormant | same, on the from-vanilla pipeline |
+| `new_regions_unlocked` | no 206th region at all | control: should be fine |
+
+*Test in each:* march an army from Spain into Gibraltar, and into the two ports next to it;
+sail a fleet through the strait.
+
+Prime suspect: **the OBSTACLE_BOUNDARIES shift** in `relabel_pathfinding`. Gibraltar is a
+fort-obstacle cell. The shift treated every record id in 85..1021 as a path id, but
+obstacle entries may use part of that range for something else (e.g. type-7 fort/slot
+records with their own ids). *Experiments:* (1) histogram (type, id) of OBSTACLE_BOUNDARIES
+records in vanilla vs the same cells in pathfinding.esf, and confirm each obstacle record's
+id matches the pathfinding record it shadows; (2) compare Gibraltar's obstacle entries in
+vanilla, m2b and m4 record by record. *Fix if confirmed:* shift an obstacle record's id
+only where the matching pathfinding record (same cell, same vertex list) was shifted.
+Second suspect: the 9,817 renumbered startpos node sequence ids in grid 2 (the coastal cuts
+add records); *check* the Gibraltar cells' OBSTACLE_BASE_GRID_NODE ids against
+`sequence_index()` of the m4 grid.
+
+#### C. After both are fixed
+
+* Re-run the full test list: land/embark on all three islands, garrison in and out of La
+  Laguna, Las Palmas and Fuerteventura Grain, Gibraltar by land and sea, several end turns,
+  Banjar and the American regions unchanged.
+* Commit `coastal.py`, the `reactivate_region.py` coastal/vertical-edge changes and these
+  notes (the coastal work is uncommitted; last commit d8dd93c).
+* Optional, later: the ~15 per-manager AI beliefs still empty on the new region (9.5),
+  Lanzarote (no room for a slot outline), the preopen region counts / ownership map.
+
+### 9.10 The path id -> region map, and the M2 order-list bug (2026-10-05)
+
+**The map is `i2[order[pid] - 1]`, not `i2[pid]`.** Checking every path id's cells against the
+regions.esf outlines: `i2[p]` names the right region for 62 of 83 tested grid-2 pids,
+`i2[order[p] - 1]` for 80, where `order` = the first n entries of `grid_data[11]` (the 3 left
+are small islands whose sampled cell centres fall inside a sea region's outline; both readings
+agree there). The 18 it fixes are vanilla's swaps: palestine/tripoli, the
+gibraltar/wilderness_khiva/spain rotation (Spain's cells are pid 19, Gibraltar's 17, Khiva's
+18), astrakhan/moldavia, bohemia/ukraine, belarus/poland, silesia/saxony and a 5-cycle
+bashkira -> ireland -> netherlands -> west_prussia -> muscovy. Grid 1 behaves the same.
+`grid_data[11]` is therefore `order` (per pid, its 1-based i2 slot) followed by the border
+groups `[count, 1-based i2 slots ...]`; the first group is empty (the sea id n), and the group
+`[19, 20]` is spain-gibraltar (read as pids it would be khiva-spain). Corrections: 8.12's
+"Khiva cells carry spain's id" was this misreading, since Khiva's cells carry Khiva's own pid,
+and the 24 "cell labelled elsewhere" geometry warnings disappear with the right map. 9.4's
+"order roughly by southern edge" was wrong too.
+
+**The bug.** M2 inserted the new pid's order entry at position 8 ("by southern edge"), so
+every later pid took its predecessor's slot: in `canaries_m2` .. `canaries_m4` 78 of 86 pids
+mapped to the wrong region. Among them: pid 19 (Spain's land) -> wilderness_khiva, 17
+(Gibraltar) -> malta, 22 (Portugal) -> morea, 85 (the islands) -> iceland and 8 (Tunis) ->
+canary_islands. That fits "armies cannot enter Gibraltar or the ports next to it unless
+they started there" (9.9 B) far better than geometry. In the passability graph that the
+fields encode (9.12), Spain -> Gibraltar's settlement outline is reachable in every build,
+and pathfinding.esf around Gibraltar is identical to vanilla modulo the id shift. Fix:
+`relabel_pathfinding` appends `n + 1` to `order`. `AreaGrid.region_of` / `pid_of` hold the
+map, and `add_region.py` and `check_geometry` now use it.
+
+Also measured while ruling out the 9.9 B suspects:
+
+* Every OBSTACLE_BOUNDARIES record's path id is a path id of its own pathfinding cell
+  (62,889 of 62,889 in vanilla and in `canaries_m5`), so shifting them in M2b was right.
+  Obstacle-only record types 8-11 exist (no pathfinding.esf record has them).
+* No fort obstacle sits at Gibraltar. The obstacle entries there belong to CHARACTER_OBSTACLEs.
+* startpos `PATHFINDING_GRID` item [8] (268 bools = ids 0..267) is indexed by pid: True on
+  all eight dormant regions (Khiva via pid 18), a few desert/sea regions, the sea id and two
+  border groups. Meaning unknown. The new pid copies unexplorable's True.
+
+### 9.11 What a vanilla footprint is; coastal footprints v2
+
+**Rule (every vanilla case):** a settlement's pathfinding slot outline (type 7) is exactly its
+regions.esf `settlement_and_slots[1]` polygon (137 of 137 within 0.01 sq units: a diamond of
+area 5.761 for minor settlements, 17.0 for major capitals), and a town / resource / port
+slot's is exactly its `slot[6]` polygon (725 of 725; a port's `[8]` is a larger 6.9 zone that
+is not in pathfinding). The outline replaces every land and impassable record under it, and
+**none of the 862 borders a sea record**. Cell invariants: 76,691 of 76,692 vertices on a cell
+edge are also vertices of the neighbour's records (the exception is at the map border,
+r187 c179), and inside a cell, records meeting along an edge share its vertices (118
+near-collinear exceptions in 14,719 cells).
+
+`canaries_m4` broke all of these. Its 0.9 octagons covered only 11-24% of the regions.esf
+polygons the game also reads, and La Laguna's octagon sat 0.3 from a third cell edge, so it
+was clipped there, leaving two T-junction vertices. The rank shift in neighbouring sea
+records (a slot inserted before a sea record moves the sea's rank) is vanilla behaviour, not
+a bug: type 7 counts in the sea class for 546 of 609 vanilla neighbour links.
+
+`coastal.py` v2 replaces the octagon cutter:
+
+* `find_outline_site`: the outline is the template's own polygon, translated exactly as
+  `patch_regions_esf` writes it (`template_outline` + `translate_footprint`), at the nearest
+  0.05-lattice point to the desired position that is inside the region, at least 0.15 from
+  every sea record, at least `min_land` on the region's land (capital 0.7, slots 0.5; the
+  rest impassable), over header cells only, clear of other land, slot outlines and obstacle
+  cells (and their 4-neighbours), with no vertex on a cell edge.
+* `plan_carve`: per cell, the outline is cut out of the land / impassable records under it.
+  It refuses holes, slivers, sea or slot contact, and a split-off land piece that does not
+  border the outline.
+* `carve_footprint`: appends the per-cell pieces at the end of each cell's record list. It
+  keeps every untouched record's vertex list and nodes each new ring at every point where
+  another record meets it (the first m5 attempt missed this and left a 0.2 sq-unit land
+  piece with no links on Fuerteventura). It then recomputes pass / unknown2 for the cells
+  and their 4-neighbours.
+* After each carve `place_coastal_footprints` asserts `check_cells`, `check_nodes` and that no
+  land record is left with pass 0 / unknown2 0.
+
+Transplanted land footprints (Pensa) keep their template's links to the neighbouring cells.
+Two blocks have a header-cell neighbour where Pensa's was interior (Khiva's Astrabad r61
+c284, grid 1 r140 c44), so `refresh_fields` now recomputes the transplanted records. Every
+grid then reproduces exactly vanilla's field-rule misses (grid 0/1/2: 0/490/232, the same
+records).
+
+### 9.12 `canaries_m5`: build, static checks, test plan (2026-10-05)
+
+```bash
+# Git Bash, game-dir clone (setup lines as in 8.21)
+$PY "$REPO/scripts/add_region.py" --regions-esf data/gc/regions.esf \
+    --startpos-esf data/campaigns/main/startpos_vanilla.esf \
+    --pathfinding-esf data/gc/pathfinding.esf --out out/canaries_base5
+$PY "$REPO/scripts/reactivate_region.py" --regions-esf out/canaries_base5/regions.esf \
+    --pathfinding-esf out/canaries_base5/pathfinding.esf \
+    --startpos-esf out/canaries_base5/startpos.esf --footprints --obstacles none --out out/canaries_m5
+$PY "$REPO/scripts/unlock_factions.py" --src out/canaries_m5/startpos.esf \
+    --dest out/canaries_m5_unlocked/startpos.esf
+cp out/canaries_m5/{regions.esf,pathfinding.esf,new_regions.pack,MANIFEST.txt} out/canaries_m5_unlocked/
+```
+
+Sites: La Laguna (-116.70, 201.68) on west-central Tenerife (the full diamond needs 1.4 units
+of room to the SW of the requested NE point), Las Palmas (-109.91, 199.57), Fuerteventura
+Grain (-99.58, 201.79).
+
+Static checks of `canaries_m5_unlocked` (all against vanilla):
+
+| check | result |
+|---|---|
+| pid -> region map, grid 2 | 80/84 like vanilla's 80/83 (old base: 8/84) |
+| outline == regions.esf polygon, Canaries | 3 of 3 exact, no sea contact |
+| cell invariants (partition, ccw, edge vertices) | same as vanilla (only r187 c179) |
+| in-cell T-junctions near the Canaries | 0 (m4: 0, first m5 attempt: 10) |
+| field-rule misses, grids 0/1/2 | 0/490/232, identical record sets to vanilla |
+| island components in the encoded graph | 4 = the four islands with land; 3 hold a slot |
+| sea around the islands | one component (477 nodes) |
+| Spain -> Gibraltar settlement outline | reachable |
+| obstacle invariants, all 7 grids | 0 errors; no edited cell carries an obstacle node |
+| obstacle record ids vs cell path ids | 62,889 / 62,889 |
+| `verify_region_mod.py`, all nine regions | ALL PASS bar the known unplaced Sumba and Mistassini slots (as trade2) |
+
+Bisect build `canaries_m5nofp_unlocked` = the same with `--no-footprint canary_islands` (the
+map fix without any Canaries footprint, i.e. m3b + fix).
+
+**Test plan.** Start a new Spain campaign on `canaries_m5_unlocked`:
+
+1. Gibraltar (9.9 B): march an army from Spain into Gibraltar, and to Cadiz and Gibraltar's
+   port; sail a fleet through the strait. Also walk Madrid -> Lisbon (Portugal's cells were
+   mapped to Morea before).
+2. Landing (9.9 A): land an army on Tenerife away from La Laguna and straight into La Laguna,
+   and on Gran Canaria, Fuerteventura and Lanzarote. Re-embark each time.
+3. La Laguna garrison: recruit there, leave and re-enter; Las Palmas and Fuerteventura
+   Grain slots reachable.
+4. Several end turns; Banjar, Arabia, Khiva and the American regions unchanged.
+
+If 1 passes and 2 fails, test `canaries_m5nofp_unlocked`: landing works there -> the carve is
+still at fault; it fails there too -> the cause is elsewhere (it worked in m3b, which had the
+same footprint-less islands but the broken map).
