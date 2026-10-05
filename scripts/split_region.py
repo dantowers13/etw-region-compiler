@@ -49,6 +49,7 @@ FIXED = 1 << 20
 DORMANT_TEMPLATE = "central_italy"
 RIVER_REGION = "all"
 RIVER_MARGIN = 0.35        # child border keeps this far from a river the line runs along
+REGION_GROW = 0.05         # region polygons are grown by this before cutting
 
 SPLITS = {
     # ~1700 limit of Guyenne-et-Gascogne + Languedoc, Bay of Biscay -> Mediterranean, in map
@@ -63,7 +64,31 @@ SPLITS = {
         child_side=(10.6, 311.5),          # a point on the child's side (Toulouse)
         theatre=34,                        # CAI theatre (France's)
     ),
+    # Batch 1 (approved on the review map, deep_dive 10.1): polygons in map coordinates,
+    # applied in this order to what is left of the parent; borders follow ~1700
+    # gouvernements, traced on the game's own (distorted) map in the north.
+    "brittany": dict(parent="france", child="brittany", child_side=(-11.0, 342.8), region=[
+        # the Duchy with the Pays de Retz south of the Loire, so the line meets the coast once
+        (-14.6, 346.9), (-10.5, 344.3), (-7.5, 341.5), (-7.5, 337.5), (-9.4, 335.6), (-10.5, 333.5), (-12.0, 332.2),
+        (-20, 330.0), (-46, 330.0), (-46, 352), (-14.6, 352)]),
+    "normandy": dict(parent="france", child="normandy", child_side=(0.0, 348.0), region=[
+        (-14.6, 346.9), (-14.6, 357.5), (3.8, 357.5), (3.8, 356.0), (8.0, 352.5), (12.8, 350.2), (14.0, 348.9),
+        (14.0, 347.9), (12.8, 347.2), (10.5, 346.5), (9.0, 344.3), (-10.5, 344.3)]),
+    "provence": dict(parent="france", child="provence", child_side=(39.3, 309.9), region=[
+        (32.519, 309.054), (32.99, 310.841), (33.813, 312.947), (33.505, 315.822), (38.896, 316.078), (45.193, 316.116),
+        (49.39, 314.908), (51.849, 309.373), (54.298, 301.567), (30.94, 303.61)]),
+    "lyonnais": dict(parent="france", child="lyonnais", child_side=(35.8, 324.0), region=[
+        (30.692, 329.484), (34.481, 328.135), (41.032, 325.425), (44.549, 323.323), (50.901, 319.441), (49.949, 316.203),
+        (49.39, 314.908), (45.193, 316.116), (38.896, 316.078), (33.505, 315.822), (34.214, 319.632), (32.787, 320.233),
+        (29.574, 321.373), (27.432, 323.944), (27.026, 327.402), (28.67, 329.313)]),
+    "burgundy": dict(parent="france", child="burgundy", child_side=(35.2, 338.1), region=[
+        (22.0, 343.5), (28.5, 344.5), (40.0, 345.0), (53.0, 342.0), (53.0, 323.944), (27.632, 323.944),
+        (27.026, 327.402), (23.5, 334.0), (21.5, 338.0)]),
+    # the walkable valley between the Pyrenees mountain zones around Spain's Andorra slot
+    "andorra": dict(parent="spain", child="andorra", child_side=(9.12, 303.26), region=[
+        (6.0, 301.4), (12.6, 301.4), (12.6, 305.8), (6.0, 305.8)]),
 }
+BATCH1 = ["brittany", "normandy", "provence", "lyonnais", "burgundy", "andorra"]
 
 
 # ─── regions.esf ──────────────────────────────────────────────────────────────
@@ -105,7 +130,11 @@ def split_regions_esf(root, spec) -> dict:
     odd = [(m.name(ri), ai) for ri, ai, ol in m.outlines()
            if (ri == pi or any(r[0] in old_parent0 for r in m.stored_runs(ol)))
            and m.runs(list(ol[3].value), ol[0].value, own0) != m.stored_runs(ol)]
-    assert not odd, f"connectivity of {odd} does not regenerate exactly; patch runs instead"
+    # vanilla's few outlines that do not regenerate exactly keep their stored runs; only the
+    # neighbour values are patched (renumbered areas, stretches that now face the child)
+    odd = {id(ol) for ri, ai, ol in m.outlines()
+           if (ri == pi or any(r[0] in old_parent0 for r in m.stored_runs(ol)))
+           and m.runs(list(ol[3].value), ol[0].value, own0) != m.stored_runs(ol)}
 
     # rivers inside the ring (their banks are the parent's open outlines)
     rivers = {}
@@ -114,12 +143,33 @@ def split_regions_esf(root, spec) -> dict:
         if not rp.is_empty and ring_poly.intersection(rp).area > 0.5 * rp.area:
             rivers[ai] = rp
 
-    cut = LineString(spec["cut"])
-    side = side_polygon(spec["cut"], spec["child_side"])
-    child = ring_poly.intersection(side)
-    crossed = [ai for ai, rp in rivers.items() if rp.intersects(cut)]
-    if crossed:
-        child = child.difference(unary_union([rivers[ai] for ai in crossed]).buffer(RIVER_MARGIN, join_style=2))
+    if "region" in spec:
+        # a polygon on the map; an inland river it would cut goes wholly to the side that
+        # holds most of it (vanilla: no river polygon straddles two land regions)
+        # grown a little, so an edge drawn along an earlier child's border lies inside that
+        # (already split off) territory instead of on the border itself
+        side = Polygon(spec["region"]).buffer(REGION_GROW, join_style=2)
+        crossed, to_child = [], []
+        for ai, rp in rivers.items():
+            f = side.intersection(rp).area / rp.area
+            if 1e-6 < f < 1 - 1e-6:
+                (to_child if f >= 0.5 else crossed).append(ai)
+        if to_child:
+            # wider than RIVER_MARGIN, so the corridor earlier splits left around the river
+            # (river plus margins, still the parent's) is taken whole, with no slivers
+            side = side.union(unary_union([rivers[ai] for ai in to_child]).buffer(RIVER_MARGIN + 0.1, join_style=2))
+        if crossed:
+            side = side.difference(unary_union([rivers[ai] for ai in crossed]).buffer(RIVER_MARGIN, join_style=2))
+        child = ring_poly.intersection(side)
+    else:
+        # a cut line; rivers it runs along stay with the parent (Occitania, tested in game)
+        cut = LineString(spec["cut"])
+        side = side_polygon(spec["cut"], spec["child_side"])
+        child = ring_poly.intersection(side)
+        crossed = [ai for ai, rp in rivers.items() if rp.intersects(cut)]
+        if crossed:
+            child = child.difference(unary_union([rivers[ai] for ai in crossed]).buffer(RIVER_MARGIN, join_style=2))
+            side = side.difference(unary_union([rivers[ai] for ai in crossed]).buffer(RIVER_MARGIN, join_style=2))
     parts = sorted([g for g in getattr(child, "geoms", [child]) if g.geom_type == "Polygon"], key=lambda g: -g.area)
     child = parts[0]
     assert not child.interiors, "child piece has a hole"
@@ -141,7 +191,19 @@ def split_regions_esf(root, spec) -> dict:
     first_new = next(k for k in range(n) if on_r[k] is None)
     arc_child = on_r[:first_new]                               # R vertices on the child side
     border = cc[first_new:]                                    # new points, ends on R-edges
-    assert all(v is None for v in on_r[first_new:]), "child ring leaves R more than once"
+    if not all(v is None for v in on_r[first_new:]):
+        runs, k = [], 0
+        while k < n:
+            if on_r[k] is None:
+                j = k
+                while j < n and on_r[j] is None:
+                    j += 1
+                runs.append((tuple(round(v, 2) for v in cc[k]), tuple(round(v, 2) for v in cc[j - 1]), j - k))
+                k = j
+            else:
+                k += 1
+        raise AssertionError(f"{spec['child']}: the border meets the parent's coast more than twice; "
+                             f"new stretches (start, end, points): {runs}")
     assert len(border) >= 2
 
     def edge_of(pt):
@@ -250,13 +312,28 @@ def split_regions_esf(root, spec) -> dict:
         touches = ri in (pi, ci) or any(r[0] in old_parent for r in stored) or va in vs or vb in vs
         if not touches:
             continue
+        if id(ol) in odd:
+            assert va not in vs and vb not in vs, "an outline the split cuts does not regenerate exactly"
+            edges = Mesh.edges(vs, ol[0].value)
+            patched = []
+            for nb, a0, a1 in stored:
+                if nb in remap:
+                    nb = remap[nb]
+                elif nb in old_parent:
+                    owners = [own1.get((y, x)) for x, y in edges[a0:a1 + 1] if own1.get((y, x)) is not None]
+                    if owners:
+                        nb = max(set(owners), key=owners.count)
+                patched.append([nb, a0, a1])
+            m.write_runs(ol, patched)
+            fallback += 1
+            continue
         new_runs = m.runs(vs, ol[0].value, own1)
         m.write_runs(ol, new_runs)
         regen += 1
     print(f"regions.esf: {spec['parent']} area 0 cut; {spec['child']} appended at index {ci} with "
           f"{1 + len(moved)} areas (sub-areas {moved}); {spec['parent']} keeps {keep}; border {len(border_v)} "
           f"vertices; coast edge inserts {ha}+{hb}; river banks {len(c_banks)} to child, {len(p_banks)} kept; "
-          f"rivers along the line {crossed}; connectivity regenerated on {regen} outlines")
+          f"rivers along the line {crossed}; connectivity regenerated on {regen} outlines, patched on {fallback}")
 
     # ── quadtree ──
     border_edges = list(zip(border_v, border_v[1:]))
@@ -353,6 +430,7 @@ def split_regions_esf(root, spec) -> dict:
             "child_poly": cpoly, "border": [m.V(v) for v in border_v],
             "child_nb": neighbour_lengths(ci), "parent_nb": neighbour_lengths(pi),
             "child_bbox": cbox, "child_areas_poly": child_areas_poly, "parent_areas_poly": parent_areas_poly,
+            "side": side,
             "class_ids": [a[5].value for a in m.areas(ci)]}
 
 
@@ -396,20 +474,47 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
         k += 1 + tail[k]
     p_slot = g.i2.index(pi) + 1                    # 1-based i2 slots in the border groups
     c_slot = n + 1
-    new_gid = len(groups)                          # group index of the parent / child border
 
     # geometry: the strip and the child's half of the plane
     border = LineString(info["border"])
-    cut = spec["cut"]
-    ext = list(border.coords)
-    if Point(ext[0]).distance(Point(cut[0])) > Point(ext[-1]).distance(Point(cut[0])):
-        ext.reverse()
-    ext = [cut[0]] + ext + [cut[-1]]
-    child_half = side_polygon(ext, spec["child_side"])
+    if "region" in spec:
+        child_half = info["side"]
+    else:
+        cut = spec["cut"]
+        ext = list(border.coords)
+        if Point(ext[0]).distance(Point(cut[0])) > Point(ext[-1]).distance(Point(cut[0])):
+            ext.reverse()
+        ext = [cut[0]] + ext + [cut[-1]]
+        child_half = side_polygon(ext, spec["child_side"])
     strip = border.buffer(STRIP_HALF)
     item = find(sp, "CAMPAIGN_PATHFINDER").children[0].children[PF_GRID]
     osys = ObstacleSystem(item)
     ob_cells = {(p >> 16, p & 0xFFFF) for p, _ in osys.pairs}
+    # Obstacle copies (deep_dive 10.6): in a cell wholly inside an obstacle's zone every
+    # entry is an exact copy of the cell's records (a run cell's: one full-cell record),
+    # and the node's [1] is the cell's record count (9,862 of 9,862). Such cells may be
+    # cut; their copies are refreshed afterwards. A cell holding a reshaped entry (the
+    # zone's edge crosses it) is only relabelled.
+    from etwpc.compiler.obstacles import _mobs
+    node_of = {(p >> 16, p & 0xFFFF): i for p, i in osys.pairs}
+    copy_entries: dict[tuple[int, int], list[int]] = {}
+    reshaped = set()
+    for rc, ni in node_of.items():
+        k, j = g.cell_item[rc[0] * g.cols + rc[1]]
+        it = g.items[k]
+        cell = None if (j or not it.bounds) else [x for ab in it.bounds for x in ab]
+        for e in _mobs(osys.nodes.children[ni])[0].children:
+            ei = e[0].value
+            pairs = osys.entries[ei].pairs
+            if cell is not None:
+                ok = pairs == cell
+            else:
+                bes = [BoundaryEntry.from_packed(pairs[i], pairs[i + 1]) for i in range(0, len(pairs), 2)]
+                ok = len(bes) == 1 and bes[0].path_type == 0 and bes[0].path_id == it.pid
+            if ok:
+                copy_entries.setdefault(rc, []).append(ei)
+            else:
+                reshaped.add(rc)
 
     # 1. shift sea and border ids (cells, records, startpos copies)
     shifted = lambda p: p + 1 if n <= p < PF_MARKERS else p
@@ -431,7 +536,6 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
                 pairs[i], pairs[i + 1] = be.to_packed()
         e.pairs = pairs
     bid = lambda gi: n + 1 + gi                    # border group id after the shift (group 0 = sea)
-    new_bid = bid(new_gid)
 
     # 2. the parent's border groups: which side are their strips on?
     side_of_group = {}
@@ -447,69 +551,115 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
                 if 0 < gi < len(groups) and p_slot in groups[gi]:
                     inside = child_half.contains(translate(q.poly, ox, oy).representative_point())
                     side_of_group.setdefault(gi, set()).add(inside)
-    regroup = []
-    for gi, sides in side_of_group.items():
-        assert len(sides) == 1, f"border group {groups[gi]} lies on both sides of the new border"
+    # a group wholly on the child's side becomes the child's; one on both sides is split
+    # (the child's part gets its own group, e.g. Savoy's border shared by Lyonnais and Provence)
+    regroup, split_to = [], {}
+    for gi, sides in sorted(side_of_group.items()):
         if sides == {True}:
             groups[gi] = [c_slot if x == p_slot else x for x in groups[gi]]
             regroup.append(gi)
+        elif sides == {True, False}:
+            split_to[gi] = len(groups)
+            groups.append([c_slot if x == p_slot else x for x in groups[gi]])
+    split_ids = {bid(gi): bid(ng) for gi, ng in split_to.items()}
+    new_gid = len(groups)                          # group index of the parent / child border
+    new_bid = bid(new_gid)
 
-    # 3. cells: relabel / carve
+    # 3. cells: relabel / carve. Planning is pure (relabels are recorded in the plan), so
+    # it can be redone when a cut must be blocked: a cut that would put new vertices on the
+    # edge of a cell holding a reshaped obstacle entry (which must not change) is undone
+    # there; other header neighbours get those vertices inserted (vanilla shares every
+    # cell-edge vertex with the neighbour).
     x0, y0, x1, y1 = unary_union([info["child_poly"], strip]).buffer(4).bounds
     r0, c0 = g.cell_of(x0, y0)
     r1, c1 = g.cell_of(x1, y1)
-    plan, run_specs = {}, {}
-    stats = {"run_relabel": 0, "run_carved": 0, "rec_relabel": 0, "rec_carved": 0, "obstacle_cells": 0}
-    for r in range(max(0, r0), min(g.rows, r1 + 1)):
-        for c in range(max(0, c0), min(g.cols, c1 + 1)):
-            ox, oy = view.origin(r, c)
-            sq = Polygon([(ox, oy), (ox + 2, oy), (ox + 2, oy + 2), (ox, oy + 2)])
-            recs = view.get(r, c)
-            obstacle = (r, c) in ob_cells
-            cuts = sq.intersection(strip).area > 1e-6 and not obstacle
-            stats["obstacle_cells"] += obstacle and sq.intersects(strip)
-            if isinstance(recs, tuple):
-                if recs[1] != fpid:
+
+    def plan_cells(blocked):
+        plan, run_specs = {}, {}
+        stats = {"run_relabel": 0, "run_carved": 0, "rec_relabel": 0, "rec_carved": 0, "blocked_cells": 0}
+        for r in range(max(0, r0), min(g.rows, r1 + 1)):
+            for c in range(max(0, c0), min(g.cols, c1 + 1)):
+                ox, oy = view.origin(r, c)
+                sq = Polygon([(ox, oy), (ox + 2, oy), (ox + 2, oy + 2), (ox, oy + 2)])
+                recs = view.get(r, c)
+                hits = sq.intersection(strip).area > 1e-6
+                cuts = hits and (r, c) not in blocked
+                stats["blocked_cells"] += hits and (r, c) in blocked
+                if isinstance(recs, tuple):
+                    if recs[1] != fpid:
+                        continue
+                    if not cuts:
+                        if child_half.contains(sq.centroid):
+                            spc = g.spec(r, c)
+                            run_specs[r * g.cols + c] = CellSpec(spc.hdr, [], spc.word, cpid)
+                            stats["run_relabel"] += 1
+                        continue
+                    out = []
+                    for t, pid, geo in ((0, fpid, sq.difference(child_half).difference(strip)),
+                                        (0, cpid, sq.intersection(child_half).difference(strip)),
+                                        (0, new_bid, sq.intersection(strip))):
+                        for pp in [x for x in getattr(geo, "geoms", [geo]) if x.geom_type == "Polygon" and x.area > 1e-6]:
+                            out.append((t, pid, orient(translate(pp, -ox, -oy), 1.0), None))
+                    plan[(r, c)] = out
+                    stats["run_carved"] += 1
                     continue
-                if not cuts:
-                    if child_half.contains(sq.centroid):
-                        spc = g.spec(r, c)
-                        run_specs[r * g.cols + c] = CellSpec(spc.hdr, [], spc.word, cpid)
-                        stats["run_relabel"] += 1
+                out, touched = [], False
+                for q in recs:
+                    pid0 = q.be.path_id
+                    wp = translate(q.poly, ox, oy)
+                    if pid0 in split_ids and child_half.contains(wp.representative_point()):
+                        out.append((q.t, split_ids[pid0], q.poly, q))
+                        touched = True
+                        continue
+                    if pid0 != fpid or q.t not in (0, 6, 7):
+                        out.append((q.t, pid0, q.poly, q))
+                        continue
+                    if cuts and q.t != 7 and wp.intersection(strip).area > 1e-6:
+                        for t, pid, geo in ((q.t, fpid, wp.difference(child_half).difference(strip)),
+                                            (q.t, cpid, wp.intersection(child_half).difference(strip)),
+                                            (0, new_bid, wp.intersection(strip))):
+                            for pp in [x for x in getattr(geo, "geoms", [geo]) if x.geom_type == "Polygon" and x.area > 1e-6]:
+                                out.append((t, pid, orient(translate(pp, -ox, -oy), 1.0), None))
+                        touched = True
+                        stats["rec_carved"] += 1
+                    elif child_half.contains(wp.representative_point()):
+                        out.append((q.t, cpid, q.poly, q))
+                        touched = True
+                        stats["rec_relabel"] += 1
+                    else:
+                        out.append((q.t, pid0, q.poly, q))
+                if touched:
+                    plan[(r, c)] = out
+        return plan, run_specs, stats
+
+    blocked = set(reshaped)
+    while True:
+        plan, run_specs, stats = plan_cells(blocked)
+        extra, conflict = {}, set()
+        cut_cells = {rc for rc, out in plan.items() if any(o is None for *_, o in out)}
+        for (r, c), out in plan.items():
+            for t, pid, poly, orig in out:
+                if orig is not None:
                     continue
-                parts = [(0, fpid, sq.difference(child_half).difference(strip)),
-                         (0, cpid, sq.intersection(child_half).difference(strip)),
-                         (0, new_bid, sq.intersection(strip))]
-                out = []
-                for t, pid, geo in parts:
-                    for p in [x for x in getattr(geo, "geoms", [geo]) if x.geom_type == "Polygon" and x.area > 1e-6]:
-                        out.append((t, pid, orient(translate(p, -ox, -oy), 1.0), None))
-                plan[(r, c)] = out
-                stats["run_carved"] += 1
-                continue
-            out, touched = [], False
-            for q in recs:
-                if q.be.path_id != fpid or q.t not in (0, 6, 7):
-                    out.append((q.t, q.be.path_id, q.poly, q))
-                    continue
-                wp = translate(q.poly, ox, oy)
-                if cuts and q.t != 7 and wp.intersection(strip).area > 1e-6:
-                    for t, pid, geo in ((q.t, fpid, wp.difference(child_half).difference(strip)),
-                                        (q.t, cpid, wp.intersection(child_half).difference(strip)),
-                                        (0, new_bid, wp.intersection(strip))):
-                        for p in [x for x in getattr(geo, "geoms", [geo]) if x.geom_type == "Polygon" and x.area > 1e-6]:
-                            out.append((t, pid, orient(translate(p, -ox, -oy), 1.0), None))
-                    touched = True
-                    stats["rec_carved"] += 1
-                elif child_half.contains(wp.representative_point()):
-                    q.be.path_id = cpid
-                    out.append((q.t, cpid, q.poly, q))
-                    touched = True
-                    stats["rec_relabel"] += 1
-                else:
-                    out.append((q.t, q.be.path_id, q.poly, q))
-            if touched:
-                plan[(r, c)] = out
+                for x, y in list(poly.exterior.coords)[:-1]:
+                    on = [(0, -1) if abs(x) < 1e-6 else (0, 1) if abs(x - 2) < 1e-6 else None,
+                          (-1, 0) if abs(y) < 1e-6 else (1, 0) if abs(y - 2) < 1e-6 else None]
+                    on = [d for d in on if d is not None]
+                    if len(on) != 1:                       # interior point or a cell corner
+                        continue
+                    dr, dc = on[0]
+                    nb = (r + dr, c + dc)
+                    if nb in cut_cells or isinstance(view.get(*nb), tuple):
+                        continue
+                    if nb in reshaped:
+                        conflict.add((r, c))
+                    else:
+                        extra.setdefault(nb, []).append((x - 2 * dc, y - 2 * dr))
+        if not conflict:
+            break
+        blocked |= conflict
+    for nb in extra:
+        plan.setdefault(nb, [(q.t, q.be.path_id, q.poly, q) for q in view.get(*nb)])
     # every carved polygon must be valid and the cell still partitioned
     for (r, c), out in plan.items():
         assert abs(sum(p.area for _, _, p, _ in out) - 4.0) < 1e-4, f"cell {(r, c)} not partitioned"
@@ -522,7 +672,7 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
         g._apply(run_specs)
         view.cache.clear()
         # the plan's original Rec objects came from the old cache: re-read nothing, they stay valid
-    res = commit_plan(view, plan)
+    res = commit_plan(view, plan, extra)
     view.cache.clear()
     bad = check_cells(view, around) + check_nodes(view, [rc for rc, out in plan.items() if any(o is None for *_, o in out)])
     assert not bad, f"carved cells break a vanilla invariant: {bad[:3]}"
@@ -547,6 +697,8 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
     flags = next(c for c in item if isinstance(c, ESFPrimitive) and c.type_tag == 0x41)
     fl = list(flags.value)
     fl.insert(cpid, fl[fpid])
+    for gi, ng in sorted(split_to.items(), key=lambda kv: kv[1]):
+        fl.append(fl[bid(gi)])
     fl.append(False)
     flags.value, flags.raw = fl, b""
     # an obstacle copy follows the cell record it copies (same vertex list); a copy the
@@ -562,6 +714,21 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
         pairs = list(e.pairs)
         for i in range(0, len(pairs), 2):
             be = BoundaryEntry.from_packed(pairs[i], pairs[i + 1])
+            if be.path_id in split_ids:
+                # a copy of a split border group's strip: same rule as the parent's records
+                tgt = split_ids[be.path_id]
+                cell_pids = set(by_vi.values())
+                if be.vertex_index in by_vi:
+                    newp = by_vi[be.vertex_index]
+                elif be.path_id not in cell_pids or tgt not in cell_pids:
+                    newp = tgt if tgt in cell_pids else be.path_id
+                else:
+                    newp = tgt if child_half.contains(Point(ox + 1, oy + 1)) else be.path_id
+                if newp != be.path_id:
+                    be.path_id = newp
+                    pairs[i], pairs[i + 1] = be.to_packed()
+                    relab += 1
+                continue
             if be.path_id != fpid:
                 continue
             if be.vertex_index in by_vi:
@@ -582,12 +749,38 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
                 pairs[i], pairs[i + 1] = be.to_packed()
                 relab += 1
         e.pairs = pairs
+    # refresh the copies of every cell that changed (cut, relabelled or new fields)
+    refreshed = 0
+    for rc, eis in copy_entries.items():
+        if rc in reshaped:
+            continue
+        k, j = g.cell_item[rc[0] * g.cols + rc[1]]
+        it = g.items[k]
+        if j or not it.bounds:
+            for ei in eis:
+                pairs = list(osys.entries[ei].pairs)
+                be = BoundaryEntry.from_packed(pairs[0], pairs[1])
+                if be.path_id != it.pid:
+                    be.path_id = it.pid
+                    pairs[0], pairs[1] = be.to_packed()
+                    osys.entries[ei].pairs = pairs
+                    refreshed += 1
+            nrec = 1
+        else:
+            cell = [x for ab in it.bounds for x in ab]
+            for ei in eis:
+                if osys.entries[ei].pairs != cell:
+                    osys.entries[ei].pairs = list(cell)
+                    refreshed += 1
+            nrec = len(it.bounds)
+        set_int(osys.nodes.children[node_of[rc]][1], nrec)
     osys.flush()
     nren = renumber_startpos_nodes(sp, PF_GRID, g)
     print(f"pathfinding grid {PF_GRID}: {spec['child']} path id {cpid}; sea {n}->{n + 1}, border ids +1; new border "
-          f"id {new_bid} [{spec['parent']}/{spec['child']}]; groups moved to the child {[groups[gi] for gi in regroup]}; "
+          f"id {new_bid} [{spec['parent']}/{spec['child']}]; groups moved to the child {[groups[gi] for gi in regroup]}, "
+          f"split {[groups[ng] for ng in split_to.values()]}; "
           f"{stats}; {res['rewritten_cells']} cells rewritten, {res['vertices_added']} vertices added; startpos flags "
-          f"{len(fl)}, obstacle copies relabelled {relab}, node sequence ids renumbered {nren}")
+          f"{len(fl)}, obstacle copies relabelled {relab}, refreshed {refreshed}, node sequence ids renumbered {nren}")
 
 
 # ─── startpos ─────────────────────────────────────────────────────────────────
@@ -616,7 +809,7 @@ def split_startpos(sp, spec, info, ids: IdPool) -> None:
     clear_bdi(item)
     cr = find(item, "CAI_REGION")
     c = info["child_poly"].representative_point()
-    set_list(cr.children[0], [spec["theatre"]])
+    set_list(cr.children[0], [spec["theatre"]] if "theatre" in spec else list(p_cr.children[0].value))
     set_int(cr.children[2], 0)
     set_list(cr.children[3], [])
     cr.children[4].value, cr.children[4].raw = float(spec["child_side"][0]), b""
@@ -812,7 +1005,8 @@ def patrol(sp, spec, info, ai_of, new_ai, ids: IdPool) -> None:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--split", required=True, choices=sorted(SPLITS))
+    ap.add_argument("--split", required=True, nargs="+", choices=sorted(SPLITS) + ["batch1"],
+                    help="splits to apply in order (batch1 = brittany normandy provence lyonnais burgundy andorra)")
     ap.add_argument("--regions-esf", type=Path, required=True)
     ap.add_argument("--startpos-esf", type=Path, required=True)
     ap.add_argument("--pathfinding-esf", type=Path,
@@ -820,19 +1014,27 @@ def main():
     ap.add_argument("--copy-from", type=Path, help="copy pathfinding.esf (without S2) / *.pack from this build dir")
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args()
-    spec = SPLITS[a.split]
+    names = [x for n in a.split for x in (BATCH1 if n == "batch1" else [n])]
     a.out.mkdir(parents=True, exist_ok=True)
     rr = ESFReader(a.regions_esf)
     reg = rr.read_root()
-    info = split_regions_esf(reg, spec)
     sr = ESFReader(a.startpos_esf)
     sp = sr.read_root()
-    split_startpos(sp, spec, info, IdPool(all_ints(sp)))
-    outputs = [(a.out / "regions.esf", rr, reg), (a.out / "startpos.esf", sr, sp)]
+    ids = IdPool(all_ints(sp))
+    pr = pf = None
     if a.pathfinding_esf:
         pr = ESFReader(a.pathfinding_esf)
         pf = pr.read_root()
-        split_pathfinding(pf, sp, spec, info)
+    for name in names:
+        spec = SPLITS[name]
+        print()
+        print(f"== split {spec['parent']} -> {spec['child']} ==")
+        info = split_regions_esf(reg, spec)
+        split_startpos(sp, spec, info, ids)
+        if pf is not None:
+            split_pathfinding(pf, sp, spec, info)
+    outputs = [(a.out / "regions.esf", rr, reg), (a.out / "startpos.esf", sr, sp)]
+    if pf is not None:
         outputs.append((a.out / "pathfinding.esf", pr, pf))
     for path, reader, root in outputs:
         path.write_bytes(ESFWriter(root, reader.tag_names, reader.timestamp).to_bytes())
