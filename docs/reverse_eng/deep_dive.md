@@ -1615,3 +1615,34 @@ bottom_left, top_left, bottom_right, top_right; a leaf is a node `[lo, hi, cell]
 So a split can update the tree locally and exactly: add the new border edges to every leaf
 they overlap, split the coast / river edges the border crosses, re-tag edges by which area's
 outline runs each way, and recompute defaults from the stored points.
+
+### 10.4 Land borders in pathfinding
+
+A land border is a strip of type-0 polygons labelled with the pair's border-group id,
+~1.0 unit wide on open ground and centred on the regions.esf border (Spain/Portugal 0.93,
+Poland/West Prussia 0.96; narrower where it crosses mountains), always in header cells.
+Interior rivers never straddle two land regions (0 of 157), so a cut that meets one keeps
+`RIVER_MARGIN` off its bank.
+
+### 10.5 `occitania_s3_unlocked` (2026-10-05)
+
+`split_region.py --split occitania` (S1 regions.esf + startpos AI, S2 pathfinding), then
+`reactivate_region.py` with the occitania spec (S3), then `unlock_factions.py`:
+
+* regions.esf: France's mainland cut along the ~1700 line (nudged south of the Massif
+  Central iron slot), 36 border vertices, coast vertices inserted in the sea rings, the
+  Rhône left whole in France; quadtree / connectivity / faces regenerated (every rule
+  reproduces as on vanilla; France + Occitania area = France's, no overlap).
+* startpos: CAI region, HLCIs, boundaries (Spain handed over, both seas cloned, new
+  France-Occitania edge), patrol points split / added, group and occupancy beliefs.
+* pathfinding: Occitania pid 86, border id 270, Spain's group moved to Occitania; strip
+  carved except in 19 cells under three French characters' obstacles (relabelled only, the
+  same relabel mirrored into their startpos copies; 62,889 / 62,889 copies match).
+* S3: Toulouse is the capital (template alsace); France's Toulouse town slot moves to
+  Carcassonne, Bordeaux town and wine move with their records (re-keyed `*:occitania:*`);
+  France keeps 80% population, 85% wealth. Footprints by the vanilla rule (old Toulouse
+  outline merged back, diamond and Carcassonne carved). Montpellier port: next step.
+
+Test: new France campaign: Occitania shows on map / minimap / lists with Toulouse,
+Carcassonne, Bordeaux; armies cross the border both ways (including along the Rhône),
+enter and leave Toulouse; land on the Languedoc coast; several end turns.

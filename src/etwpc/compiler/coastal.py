@@ -194,8 +194,7 @@ def refresh_fields(view: CellView, cells, types=(0, 7)) -> int:
                 fixed += 1
             bounds.append(rec.be.to_packed())
         if dirty:
-            k, _ = g.cell_item[r * g.cols + c]
-            new_specs[r * g.cols + c] = CellSpec(g.items[k].hdr, bounds, None, None)
+            new_specs[r * g.cols + c] = CellSpec(g.spec(r, c).hdr, bounds, None, None)
     if new_specs:
         g._apply(new_specs)
     view.cache.clear()
@@ -280,7 +279,7 @@ class Terrain:
 
 
 def find_outline_site(view: CellView, make, near, land_pid: int, inside, *, radius=4.0, step=0.05,
-                      sea_margin=0.15, min_land=0.7, gap=0.1, taken=(), avoid=frozenset()):
+                      sea_margin=0.15, min_land=0.7, gap=0.1, taken=(), avoid=frozenset(), allow_run=False):
     """Nearest lattice point to `near` where the outline make(x, y) is a vanilla-like
     footprint: inside the region, over header cells only (none of them or their
     4-neighbours in `avoid`), at least `sea_margin` from every sea record, overlapping no
@@ -307,13 +306,14 @@ def find_outline_site(view: CellView, make, near, land_pid: int, inside, *, radi
         if taken_u is not None and poly.distance(taken_u) < gap:
             continue
         cells = outline_cells(g, poly)
-        if any(rc in ter.run_cells or rc in avoid for rc in cells) or any(rc in avoid for rc in ring_of(cells)):
+        if any((rc in ter.run_cells and not (allow_run and view.get(*rc)[1] == land_pid)) or rc in avoid
+               for rc in cells) or any(rc in avoid for rc in ring_of(cells)):
             continue
         if any(min(abs((px - g.ox) / g.cs - round((px - g.ox) / g.cs)),
                    abs((py - g.oy) / g.cs - round((py - g.oy) / g.cs))) < 1e-3
                for px, py in poly.exterior.coords):
             continue
-        if plan_carve(view, poly, land_pid) is None:
+        if plan_carve(view, poly, land_pid, allow_run=allow_run) is None:
             continue
         return x, y, poly
     raise RuntimeError(f"no footprint site within {radius} of {near} (min land {min_land}, sea margin {sea_margin})")
@@ -365,15 +365,19 @@ def check_nodes(view: CellView, cells) -> list[str]:
     return bad
 
 
-def plan_carve(view: CellView, outline: Polygon, land_pid: int):
+def plan_carve(view: CellView, outline: Polygon, land_pid: int, allow_run: bool = False):
     """{cell: [(path_type, path_id, local polygon, original Rec or None)]} with the
     outline cut out of every land / impassable record and appended as a type-7 record,
-    or None if the cut would leave a hole, a sliver, or touch a sea / slot record."""
+    or None if the cut would leave a hole, a sliver, or touch a sea / slot record. With
+    allow_run, an interior run cell of land_pid counts as one full-cell land record."""
     plan = {}
     for r, c in outline_cells(view.g, outline):
         recs = view.get(r, c)
         if isinstance(recs, tuple):
-            return None
+            if not (allow_run and recs[1] == land_pid):
+                return None
+            recs = [Rec(BoundaryEntry(land_pid, 0, 0, 0, 0), [0, 2, 3, 1], CELL)]
+            recs[0].fresh = True
         ox, oy = view.origin(r, c)
         piece = translate(outline, -ox, -oy).intersection(CELL)
         if piece.geom_type != "Polygon" or piece.area < 1e-4:
@@ -383,7 +387,7 @@ def plan_carve(view: CellView, outline: Polygon, land_pid: int):
             if q.poly.intersection(piece).area < 1e-9:
                 if q.t in SEA and q.poly.boundary.intersection(piece.boundary).length > EPS:
                     return None
-                out.append((q.t, q.be.path_id, q.poly, q))
+                out.append((q.t, q.be.path_id, q.poly, None if getattr(q, "fresh", False) else q))
                 continue
             if q.t not in LAND | DEAD or (q.t in LAND and q.be.path_id != land_pid):
                 return None
@@ -402,16 +406,52 @@ def plan_carve(view: CellView, outline: Polygon, land_pid: int):
     return plan
 
 
-def carve_footprint(view: CellView, outline: Polygon, land_pid: int) -> dict:
+def carve_footprint(view: CellView, outline: Polygon, land_pid: int, allow_run: bool = False) -> dict:
     """Carve `outline` (world coordinates) into the grid as a slot outline of `land_pid`:
     every land / impassable record under it loses that part, the per-cell pieces are
     appended to their cells as type-7 records, vertices on cell edges are shared by both
     cells, and pass / unknown2 are recomputed for the edited cells and their 4-neighbours.
     Records outside the outline keep their vertex lists. Writes back to the grid."""
-    g = view.g
-    plan = plan_carve(view, outline, land_pid)
+    plan = plan_carve(view, outline, land_pid, allow_run=allow_run)
     if plan is None:
         raise RuntimeError("outline cannot be carved here")
+    return commit_plan(view, plan) | {"area": outline.area}
+
+
+def uncarve_footprint(view: CellView, outline: Polygon, land_pid: int) -> dict:
+    """Undo a slot outline: the type-7 records of `land_pid` lying inside `outline` (world
+    coordinates) merge back into the cell's type-0 land of the same pid. Used when a slot
+    moves away (its old outline would be a slot with nothing on it)."""
+    from shapely.affinity import translate as _tr
+    plan = {}
+    for r, c in outline_cells(view.g, outline):
+        recs = view.get(r, c)
+        if isinstance(recs, tuple):
+            continue
+        ox, oy = view.origin(r, c)
+        local = _tr(outline, -ox, -oy).buffer(0.02)
+        slot = [q for q in recs if q.t == 7 and q.be.path_id == land_pid and q.poly.difference(local).area < 1e-6]
+        if not slot:
+            continue
+        land = [q for q in recs if q.t == 0 and q.be.path_id == land_pid]
+        merged = unary_union([q.poly for q in slot + land])
+        out = [(q.t, q.be.path_id, q.poly, q) for q in recs if q not in slot and q not in land]
+        for p in _parts(merged):
+            assert not p.interiors, f"cell {(r, c)}: merged land has a hole"
+            out.append((0, land_pid, orient(p, 1.0), None))
+        plan[(r, c)] = out
+    if not plan:
+        return {"cells": [], "rewritten_cells": 0, "records_changed": 0, "vertices_added": 0}
+    return commit_plan(view, plan)
+
+
+def commit_plan(view: CellView, plan: dict) -> dict:
+    """Write `plan` = {cell: [(path_type, path_id, local polygon, original Rec or None)]}
+    back to the grid: new records get vertex lists (shared fixed-point vertices, rings noded
+    where records meet, corner markers), original ones keep theirs (a changed path id is
+    kept), and pass / unknown2 are recomputed for the cells and their 4-neighbours. A cell
+    may have been a run cell; it becomes a header cell with its own 8-byte header."""
+    g = view.g
     ring = ring_of(plan)
 
     def fixed(v):
@@ -457,8 +497,11 @@ def carve_footprint(view: CellView, outline: Polygon, land_pid: int) -> dict:
         out = []
         for t, pid, poly, orig in recs:
             if orig is not None:
-                out.append(orig)
-                continue
+                noded = _node(orig.poly, pool)
+                if len(noded.exterior.coords) == len(orig.poly.exterior.coords):
+                    out.append(orig)
+                    continue
+                poly = noded                  # a new vertex lies on one of its edges: re-encode it
             ents = encode(_node(poly, pool), ox, oy)
             pts = [CORNERS[e] if e in CORNERS else (g.vx[e] - ox, g.vy[e] - oy) for e in ents]
             rec = Rec(BoundaryEntry(pid, 0, 0, 0, t), ents, Polygon(pts))
@@ -473,7 +516,6 @@ def carve_footprint(view: CellView, outline: Polygon, land_pid: int) -> dict:
         recs = view.get(r, c)
         if isinstance(recs, tuple):
             continue
-        k, _ = g.cell_item[r * g.cols + c]
         bounds = []
         for rec, (pas, u2) in zip(recs, compute_fields(view, r, c)):
             be = rec.be
@@ -486,8 +528,8 @@ def carve_footprint(view: CellView, outline: Polygon, land_pid: int) -> dict:
                 g.vlist.extend(rec.ents)
                 be.vertex_index = vi
             bounds.append(be.to_packed())
-        new_specs[r * g.cols + c] = CellSpec(g.items[k].hdr, bounds, None, None)
+        new_specs[r * g.cols + c] = CellSpec(g.spec(r, c).hdr, bounds, None, None)
     g._apply(new_specs)
     view.cache.clear()
     return {"cells": sorted(plan), "rewritten_cells": len(new_specs), "records_changed": n_changed,
-            "vertices_added": added, "area": outline.area}
+            "vertices_added": added}
