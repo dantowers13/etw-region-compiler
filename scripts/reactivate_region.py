@@ -124,7 +124,7 @@ class RegionSpec:
     # Regions URR does not have (a new 206th region, add_region.py): explicit positions,
     # our slot key (or "capital") -> (x, y), replacing the donor lookup.
     positions: dict[str, tuple[float, float]] | None = None
-    footprints: bool = True           # False: no settlement/slot footprint (--footprints skips it)
+    footprints: bool | str = True     # False: none; "coastal": regions.esf outlines carved into coastal cells (coastal.py)
 
 
 # Names are ~1700 (approved 2026-10-01); URR's legendary/anachronistic ones are replaced.
@@ -273,12 +273,14 @@ SPECS: dict[str, RegionSpec] = {s.name: s for s in [
         settlement_display="La Laguna", donor_settlement_key="",
         slot_map={
             "town:canary_islands:las_palmas": ("town:canary_islands:las_palmas", "Las Palmas", "town"),
-            "wine:canary_islands:lanzarote": ("wine:canary_islands:lanzarote", "Lanzarote Malvasia", "wine"),
+            # Fuerteventura, "the granary of the Canaries"; Lanzarote's pathfinding cells
+            # have no room for even a small slot outline (deep_dive 9.8)
+            "wheat:canary_islands:fuerteventura": ("wheat:canary_islands:fuerteventura", "Fuerteventura Grain", "wheat"),
         },
         positions={"capital": (-115.499, 202.380),
                    "town:canary_islands:las_palmas": (-109.858, 199.567),
-                   "wine:canary_islands:lanzarote": (-96.729, 206.543)},
-        footprints=False,
+                   "wheat:canary_islands:fuerteventura": (-99.58, 201.79)},
+        footprints="coastal",
         owner_faction="spain", emergent_nation="spanish_rebels", rebels_name="Canarian Rebels",
         culture="sc_european_south", population=(100000, 125000, 100000), colour=(241, 196, 15),
         religion=(("rel_catholic", 1.0),),
@@ -1153,11 +1155,15 @@ def place_footprints(specs, pf_root, sp_root, regions_root) -> dict[int, AreaGri
     src_gi, tpl = FOOTPRINT_TEMPLATE
     src = grid(src_gi)
     reserved: dict[int, set] = {}
+    blocks: dict[int, list] = {}          # grid -> transplanted footprint centres
     for spec in specs:
         if not spec.footprints:
             print(f"footprint {spec.name}: none (spec.footprints = False)")
             continue
         g = grid(spec.pf_grid)
+        if spec.footprints == "coastal":
+            place_coastal_footprints(spec, g, sp_root, regions_root)
+            continue
         if spec.pf_grid not in reserved:
             osys = ObstacleSystem(find(sp_root, "CAMPAIGN_PATHFINDER").children[0].children[spec.pf_grid])
             reserved[spec.pf_grid] = {(p >> 16, p & 0xFFFF) for p, _ in osys.pairs}
@@ -1182,6 +1188,7 @@ def place_footprints(specs, pf_root, sp_root, regions_root) -> dict[int, AreaGri
                     except RuntimeError:
                         continue
                     g.transplant(tpl, new_xy, FOOTPRINT_RADIUS, pid, src=src)
+                    blocks.setdefault(spec.pf_grid, []).append(new_xy)
                     return new_xy, pid
             return None, label(xy)
 
@@ -1205,8 +1212,90 @@ def place_footprints(specs, pf_root, sp_root, regions_root) -> dict[int, AreaGri
                 continue
             print(f"   {sl.key}: {sl.pos} -> {new_xy} (label {pid})")
             sl.pos = new_xy
+    # a block keeps its template's links to neighbouring cells; where a neighbour here is
+    # a header cell instead of interior, recompute them (Khiva's Astrabad, deep_dive 9.11).
+    # Only the block's own records: the rules miss a few vanilla ones in other cells.
+    from etwpc.compiler.coastal import CellView, refresh_fields
+    for gi, centres in sorted(blocks.items()):
+        cells = set()
+        for xy in centres:
+            r0, c0 = grids[gi].cell_of(*xy)
+            cells |= {(r, c) for r in range(r0 - FOOTPRINT_RADIUS, r0 + FOOTPRINT_RADIUS + 1)
+                      for c in range(c0 - FOOTPRINT_RADIUS, c0 + FOOTPRINT_RADIUS + 1)}
+        n = refresh_fields(CellView(grids[gi]), sorted(cells))
+        print(f"footprints grid {gi}: {n} transplanted record field(s) recomputed")
     edited = {s.pf_grid for s in specs}
     return {gi: g for gi, g in grids.items() if gi in edited}
+
+
+def template_outline(regions_root, spec: RegionSpec, kind: str):
+    """(float32 polygon bytes, anchor) that patch_regions_esf translates for a footprint:
+    the template's settlement polygon for kind 'capital', else its first slot of `kind`."""
+    regs = regions_root.children[3].children[3]
+    tsas = sas_of(next(it for it in regs.children if region_name(it) == spec.template))
+    if kind == "capital":
+        return tsas.children[1].raw, tsas.children[0].value
+    t = next(sl for sl in tsas.children[2].children if slot_kind(sl[0].value) == kind)
+    return t[6].raw, t[2].value
+
+
+def place_coastal_footprints(spec, g: AreaGrid, sp_root, regions_root) -> None:
+    """Islands with no interior cells (deep_dive 9.8-9.11). In vanilla a slot outline IS
+    the regions.esf footprint polygon (settlement_and_slots[1] for the settlement, slot[6]
+    for a town / resource slot), carved out of the land and impassable records under it
+    and never touching a sea record. So each outline here is the template polygon that
+    patch_regions_esf will write, placed at the nearest site to the desired point where it
+    fits that rule (coastal.find_outline_site), and carved in place. The settlement_*
+    building slots follow the capital. Sites avoid cells that carry a startpos obstacle
+    node, and so do their 4-neighbours (their fields are recomputed). Refuses to edit if
+    the encoding rules do not reproduce the stored fields around a site, or if the edited
+    cells break a vanilla invariant afterwards."""
+    from shapely.geometry import Polygon
+    from etwpc.compiler.coastal import (CellView, carve_footprint, check_cells, check_nodes,
+                                        find_outline_site, ring_of, self_test)
+    osys = ObstacleSystem(find(sp_root, "CAMPAIGN_PATHFINDER").children[0].children[spec.pf_grid])
+    avoid = frozenset((p >> 16, p & 0xFFFF) for p, _ in osys.pairs)
+    rd = regions_root.children[3].children[3]
+    pid = g.pid_of([region_name(r) for r in rd.children].index(spec.name))
+    inside = region_ring_inside(regions_root, spec.name)
+    taken = []
+
+    def place(xy, label, kind, min_land):
+        raw, anchor = template_outline(regions_root, spec, kind)
+
+        def make(x, y):
+            f = struct.unpack(f"<{len(raw) // 4}f", translate_footprint(raw, anchor, (x, y)))
+            return Polygon(list(zip(f[0::2], f[1::2])))
+
+        view = CellView(g)
+        x, y, outline = find_outline_site(view, make, xy, pid, inside, min_land=min_land, taken=taken, avoid=avoid)
+        r0, c0 = g.cell_of(x, y)
+        around = [(r, c) for r in range(r0 - 4, r0 + 5) for c in range(c0 - 4, c0 + 5)]
+        bad = self_test(view, around)
+        assert not bad, f"{spec.name} {label}: encoding rules do not reproduce cells near {(x, y)}: {bad[:3]}"
+        res = carve_footprint(view, outline, pid)
+        bad = check_cells(view, res["cells"] + sorted(ring_of(res["cells"]))) + check_nodes(view, res["cells"])
+        bad += [f"cell {rc}: land record {i} reaches nothing" for rc in res["cells"]
+                for i, q in enumerate(view.get(*rc)) if q.t == 0 and not q.be.passable_part and not q.be.unknown2]
+        assert not bad, f"{spec.name} {label}: carved cells break a vanilla invariant: {bad[:3]}"
+        taken.append(outline)
+        print(f"   coastal footprint {label}: {xy} -> ({x:.3f}, {y:.3f}), outline area {res['area']:.3f} over "
+              f"cells {res['cells']}; {res['records_changed']} records rewritten in {res['rewritten_cells']} cells, "
+              f"{res['vertices_added']} vertices added")
+        return (x, y)
+
+    old_cap = spec.capital
+    spec.capital = place(old_cap, "capital", "capital", min_land=0.7)
+    ddx, ddy = spec.capital[0] - old_cap[0], spec.capital[1] - old_cap[1]
+    print(f"footprint {spec.name}: capital {old_cap} -> {spec.capital} (coastal, path id {pid})")
+    for sl in spec.slots:
+        if sl.kind.startswith("settlement_"):
+            sl.pos = (sl.pos[0] + ddx, sl.pos[1] + ddy)
+        elif sl.kind in ("town", "resource"):
+            try:
+                sl.pos = place(sl.pos, sl.key, sl.kind, min_land=0.5)
+            except RuntimeError as e:
+                print(f"   WARNING {sl.key}: {e}; slot left without footprint")
 
 
 def renumber_startpos_nodes(sp_root, gi: int, grid: AreaGrid) -> int:
@@ -1570,6 +1659,8 @@ def main():
     ap.add_argument("--obstacles", choices=["none", "geometry", "full"], default="full",
                     help="bisect switch: none = no obstacles at all; geometry = obstacle "
                          "records/nodes only, no fort objects or CAI fort records; full = both")
+    ap.add_argument("--no-footprint", nargs="+", default=[], choices=sorted(SPECS), metavar="REGION",
+                    help="bisect switch: build these regions without a settlement/slot footprint")
     a = ap.parse_args()
     if a.list:
         for s in SPECS.values():
@@ -1577,6 +1668,9 @@ def main():
                   f"owner {s.owner_faction:12} template {s.template}")
         return
     specs = [SPECS[n] for n in a.regions]
+    for spec in specs:
+        if spec.name in a.no_footprint:
+            spec.footprints = False
     out = a.out
     out.mkdir(parents=True, exist_ok=True)
 
@@ -1661,6 +1755,7 @@ def main():
           "|", "startpos OK" if roundtrip_ok(p_sp) else "startpos FAIL")
     (out / "MANIFEST.txt").write_text(
         f"regions={' '.join(s.name for s in specs)}\nobstacles={a.obstacles}\n"
+        f"footprints={' '.join(f'{s.name}:{s.footprints}' for s in specs) if a.footprints else 'none'}\n"
         f"regions.esf -> data/campaign_maps/global_map/regions.esf\n"
         f"startpos.esf -> data/campaigns/main/startpos.esf\n"
         f"{p_pack.name} -> data/{p_pack.name}  (movie pack, auto-loads; DB rows"
