@@ -82,6 +82,7 @@ class SlotSpec:
     slot_type: str = ""          # DB slot type for resource ("sheep"), town type for town ("town", "town-metal")
     display: str = ""            # towns_and_ports display name
     src: str = ""                # a slot moved from the parent region: its parent key
+    stay: bool = False           # ... that stays with the parent (only its position moves)
 
 
 @dataclass
@@ -129,13 +130,18 @@ class RegionSpec:
     # A region split off a live one (split_region.py, deep_dive 10). The parent's slot
     # records MOVE here, keeping their ids, buildings and AI history (deleting one would
     # leave ~300 AI references dangling): parent slot key -> (our key, display, new position
-    # or None to stay). capital_slot = a moved parent slot whose old spot becomes the
-    # capital. parent_share = this region's share of the parent's (population, wealth).
+    # or None to stay[, True = the slot stays with the parent and only moves]). Our key None
+    # keeps the parent's key (ports: trade_routes.esf and sea_grids.esf name them by key).
+    # capital_slot = a parent slot whose old spot becomes the capital. parent_share = this
+    # region's share of the parent's (population, wealth). slot_buildings: new slot key ->
+    # a vanilla slot whose starting building it copies (Mont-Saint-Michel's church school).
     parent: str | None = None
-    transfers: dict[str, tuple[str, str, tuple[float, float] | None]] | None = None
+    transfers: dict[str, tuple] | None = None
+    slot_buildings: dict[str, str] | None = None
     capital_slot: str | None = None
     parent_share: tuple[float, float] = (0.0, 0.0)
     moved: list[SlotSpec] = field(default_factory=list)      # filled in by resolve_spec()
+    capital_raw: bytes | None = None    # the capital kept capital_slot's outline (place_split_footprints)
 
 
 # Names are ~1700 (approved 2026-10-01); URR's legendary/anachronistic ones are replaced.
@@ -318,6 +324,85 @@ SPECS: dict[str, RegionSpec] = {s.name: s for s in [
         resources=["europe", "displaced_scots", "global", "displaced_irish", "france", "lancers",
                    "middle_east_and_europe"],
     ),
+    # Batch 1 (approved 2026-10-05, deep_dive 10): split off France / Spain by split_region.py.
+    RegionSpec(
+        name="brittany", theatre_flag=2, pf_grid=2, theatre_name="europe", template="alsace",
+        region_display="Brittany", settlement_key="settlement:brittany:rennes", settlement_display="Rennes",
+        slot_map={}, donor_settlement_key="", parent="france", positions={"capital": (-10.99, 342.82)},
+        transfers={
+            "port:france:brest": (None, None, None),
+            "town:france:nantes": ("town:brittany:nantes", "Nantes", None),
+            "sheep:france:bretagne": ("sheep:brittany:bretagne", "Brittany Farmland", None),
+        },
+        parent_share=(0.12, 0.12), footprints="carve",
+        owner_faction="france", emergent_nation="french_rebels", rebels_name="Breton Rebels",
+        culture="sc_european_west", population=(0, 0, 0), colour=(23, 89, 151),
+        religion=(("rel_catholic", 1.0),), resources=["europe", "displaced_scots", "global", "displaced_irish", "france", "lancers",
+                   "middle_east_and_europe"],
+    ),
+    RegionSpec(
+        # Mont-Saint-Michel: a town that starts with a Church School (copied from Dijon's)
+        name="normandy", theatre_flag=2, pf_grid=2, theatre_name="europe", template="alsace",
+        region_display="Normandy", settlement_key="settlement:normandy:rouen", settlement_display="Rouen",
+        slot_map={"town:normandy:mont_saint_michel": ("town:normandy:mont_saint_michel", "Mont-Saint-Michel", "town")},
+        donor_settlement_key="", parent="france",
+        positions={"capital": (7.94, 351.51), "town:normandy:mont_saint_michel": (-10.56, 345.58)},
+        transfers={"port:france:le_havre": (None, None, None)},
+        slot_buildings={"town:normandy:mont_saint_michel": "town:france:dijon"},
+        parent_share=(0.12, 0.12), footprints="carve",
+        owner_faction="france", emergent_nation="french_rebels", rebels_name="Norman Rebels",
+        culture="sc_european_west", population=(0, 0, 0), colour=(189, 64, 33),
+        religion=(("rel_catholic", 0.95), ("rel_protestant", 0.05)), resources=["europe", "displaced_scots", "global", "displaced_irish", "france", "lancers",
+                   "middle_east_and_europe"],
+    ),
+    RegionSpec(
+        name="provence", theatre_flag=2, pf_grid=2, theatre_name="europe", template="alsace",
+        region_display="Provence", settlement_key="settlement:provence:aix", settlement_display="Aix-en-Provence",
+        slot_map={}, donor_settlement_key="", parent="france", positions={"capital": (39.27, 309.86)},
+        transfers={"port:france:marseille": (None, None, None)},
+        parent_share=(0.08, 0.10), footprints="carve",
+        owner_faction="france", emergent_nation="french_rebels", rebels_name="Provencal Rebels",
+        culture="sc_european_south", population=(0, 0, 0), colour=(121, 51, 145),
+        religion=(("rel_catholic", 1.0),), resources=["europe", "displaced_scots", "global", "displaced_irish", "france", "lancers",
+                   "middle_east_and_europe"],
+    ),
+    RegionSpec(
+        # Lyon becomes the capital; its town slot moves to Montbrison (Forez): the Rhone
+        # valley (Valence) is all obstacle-reshaped cells, and this is the one clean run cell
+        name="lyonnais", theatre_flag=2, pf_grid=2, theatre_name="europe", template="alsace",
+        region_display="Lyonnais", settlement_key="settlement:lyonnais:lyon", settlement_display="Lyon",
+        slot_map={}, donor_settlement_key="", parent="france", capital_slot="town:france:lyons",
+        transfers={"town:france:lyons": ("town:lyonnais:montbrison", "Montbrison", (29.0, 323.05))},
+        parent_share=(0.10, 0.12), positions={}, footprints="carve",
+        owner_faction="france", emergent_nation="french_rebels", rebels_name="Lyonnais Rebels",
+        culture="sc_european_south", population=(0, 0, 0), colour=(226, 158, 11),
+        religion=(("rel_catholic", 0.85), ("rel_protestant", 0.15)), resources=["europe", "displaced_scots", "global", "displaced_irish", "france", "lancers",
+                   "middle_east_and_europe"],
+    ),
+    RegionSpec(
+        # Dijon becomes the capital; its town slot (with its Church School) moves to Auxerre
+        name="burgundy", theatre_flag=2, pf_grid=2, theatre_name="europe", template="alsace",
+        region_display="Burgundy", settlement_key="settlement:burgundy:dijon", settlement_display="Dijon",
+        slot_map={}, donor_settlement_key="", parent="france", capital_slot="town:france:dijon",
+        transfers={"town:france:dijon": ("town:burgundy:auxerre", "Auxerre", (24.92, 340.12))},
+        parent_share=(0.12, 0.12), positions={}, footprints="carve",
+        owner_faction="france", emergent_nation="french_rebels", rebels_name="Burgundian Rebels",
+        culture="sc_european_west", population=(0, 0, 0), colour=(128, 26, 64),
+        religion=(("rel_catholic", 0.95), ("rel_protestant", 0.05)), resources=["europe", "displaced_scots", "global", "displaced_irish", "france", "lancers",
+                   "middle_east_and_europe"],
+    ),
+    RegionSpec(
+        # the Pyrenean valley; Spain's Andorra town slot moves south into Spain as Urgell
+        name="andorra", theatre_flag=2, pf_grid=2, theatre_name="europe", template="naples",
+        region_display="Andorra", settlement_key="settlement:andorra:andorra_la_vella",
+        settlement_display="Andorra la Vella", slot_map={}, donor_settlement_key="", parent="spain",
+        capital_slot="town:spain:andorra",
+        transfers={"town:spain:andorra": ("town:spain:urgell", "Urgell", (6.75, 296.25), True)},
+        parent_share=(0.005, 0.005), positions={}, footprints="carve",
+        owner_faction="spain", emergent_nation="spanish_rebels", rebels_name="Andorran Rebels",
+        culture="sc_european_south", population=(0, 0, 0), colour=(10, 126, 70),
+        religion=(("rel_catholic", 1.0),),
+    ),
 ]}
 
 
@@ -333,12 +418,14 @@ def resolve_spec(spec: RegionSpec, regions_root, donor_regions_root, tpl_db_cont
         spec.capital = tuple(pslots[spec.capital_slot][2].value) if spec.capital_slot else spec.positions["capital"]
         towns = {r[0]: r for r in read_db_rows(VANILLA_TOWNS_DB, 3, 0)}
         spec.moved = []
-        for pkey, (key, display, newpos) in spec.transfers.items():
+        for pkey, tr in spec.transfers.items():
+            key, display, newpos = tr[:3]
             kind = slot_kind(pkey)
-            stype = towns[pkey][1] if kind == "town" else pkey.split(":")[0]
+            stype = towns[pkey][1] if kind in ("town", "port") else pkey.split(":")[0]
             pos = tuple(newpos) if newpos else tuple(pslots[pkey][2].value)
-            spec.moved.append(SlotSpec(key, kind, pos, slot_type=stype, display=display, src=pkey))
-        donor = {}
+            spec.moved.append(SlotSpec(key or pkey, kind, pos, slot_type=stype, display=display, src=pkey,
+                                       stay=len(tr) > 3 and tr[3]))
+        donor = {dkey: spec.positions[key] for dkey, (key, _, _) in spec.slot_map.items()}
     elif spec.positions is not None:
         spec.capital = spec.positions["capital"]
         donor = {dkey: spec.positions[key] for dkey, (key, _, _) in spec.slot_map.items()}
@@ -532,7 +619,7 @@ def patch_regions_esf(root, spec: RegionSpec, cai_pos) -> None:
     sas = deep_copy(tsas)
     tcap = tsas.children[0].value
     set_v2(sas.children[0], spec.capital)
-    sas.children[1].raw = translate_footprint(tsas.children[1].raw, tcap, spec.capital)
+    sas.children[1].raw = spec.capital_raw or translate_footprint(tsas.children[1].raw, tcap, spec.capital)
     sas.children[1].value = None
 
     by_kind = {}
@@ -566,6 +653,8 @@ def patch_regions_esf(root, spec: RegionSpec, cai_pos) -> None:
                 continue
             old = tuple(sl[2].value)
             set_str(sl[0], m.key)
+            if m.stay:
+                keep.append(sl)
             if tuple(m.pos) != old:
                 dx, dy = m.pos[0] - old[0], m.pos[1] - old[1]
                 for k in (6, 8):
@@ -574,8 +663,10 @@ def patch_regions_esf(root, spec: RegionSpec, cai_pos) -> None:
                         sl[k].value = None
                 set_v2(sl[2], m.pos)
                 set_v2(sl[3], (sl[3].value[0] + dx, sl[3].value[1] + dy))
-            new_slots.append(sl)
-        assert len(keep) == len(psas.children[2].children) - len(moved), "a moved slot is missing from the parent"
+            if not m.stay:
+                new_slots.append(sl)
+        n_stay = sum(1 for m in moved.values() if m.stay)
+        assert len(keep) == len(psas.children[2].children) - len(moved) + n_stay, "a moved slot is missing from the parent"
         psas.children[2].children = keep
     sas.children[2].children = new_slots
     tgt.append(sas)
@@ -637,7 +728,7 @@ def check_geometry(regions_root, pf_root, spec: RegionSpec) -> None:
         for j in range(1, n):
             owner[pos + j] = u2
         pos += n
-    for label, (x, y) in [("capital", spec.capital)] + [(s.key, s.pos) for s in spec.slots + spec.moved]:
+    for label, (x, y) in [("capital", spec.capital)] + [(s.key, s.pos) for s in spec.slots + spec.moved if not s.stay]:
         cell = int((y - oy) / cs) * cols + int((x - ox) / cs)
         o = owner[cell]
         on_cells = o == pid or o == "boundary-cell"
@@ -985,7 +1076,10 @@ def transfer_startpos(root, spec: RegionSpec, cai_region_ai_id: int, R) -> None:
     items = P.children[3].children[0].children
     take = [it for it in items if it[0].children[3].value in moved]
     assert len(take) == len(moved), f"{spec.parent} lacks some of {sorted(moved)}"
-    P.children[3].children[0].children = [it for it in items if it not in take]
+    staying = [it for it in take if moved[it[0].children[3].value].stay]
+    p_ai = next(it[2].value for it in find(root, "CAI_WORLD_REGIONS").children
+                if find(it, "CAI_REGION").children[10].value == spec.parent)
+    P.children[3].children[0].children = [it for it in items if it not in take or it in staying]
     cbs = find(root, "CAI_WORLD_BUILDING_SLOTS")
     crs = find(root, "CAI_WORLD_REGION_SLOTS")
     cwr = find(root, "CAI_WORLD_REGIONS")
@@ -1007,10 +1101,15 @@ def transfer_startpos(root, spec: RegionSpec, cai_region_ai_id: int, R) -> None:
             set_int(sit.children[1], fixed(m.pos[1]))
             set_int(sit.children[2], cai_region_ai_id)
             set_list(sit.children[3], theatre_id)
+        if m.stay:
+            for sit in [r[1]] + [c for c in find(r, "CAI_REGION_SLOT").children if isinstance(c, ESFNode) and c.tag == "CAI_SITUATED"]:
+                set_int(sit.children[2], p_ai)
+                set_list(sit.children[3], list(p_cr.children[0].value))
+            continue
         rids.append(rid)
     set_list(p_cr.children[3], [x for x in p_cr.children[3].value if x not in rids])
     set_list(c_cr.children[3], list(c_cr.children[3].value) + rids)
-    R.children[3].children[0].children += take
+    R.children[3].children[0].children += [it for it in take if it not in staying]
     pop, rf = P.children[1], P.children[1].children[0]
     ps, ws_ = spec.parent_share
     for i in (1, 2, 3):
@@ -1019,7 +1118,19 @@ def transfer_startpos(root, spec: RegionSpec, cai_region_ai_id: int, R) -> None:
         set_int(rf.children[i], int(rf.children[i].value * (1 - ps)))
     for i in (10, 11):
         set_int(P.children[i], int(P.children[i].value * (1 - ws_)))
-    print(f"  moved {len(take)} slot records from {spec.parent} ({[moved[k].key for k in moved]}), CAI region "
+    for key, src in (spec.slot_buildings or {}).items():
+        ra = find(root, "REGIONS_ARRAY")
+        rs_of = {it[0].children[3].value: it[0] for reg in ra.children
+                 for it in find(reg, "REGION").children[3].children[0].children}
+        moved_keys = {m.src: m.key for sp_ in SPECS.values() for m in sp_.moved}
+        src_rs = rs_of.get(src) or rs_of[moved_keys[src]]
+        dst = rs_of[key]
+        dst.children[1] = deep_copy(src_rs.children[1])
+        b = find(dst.children[1], "BUILDING")
+        if b is not None:
+            set_str(b.children[2], spec.owner_faction)
+        print(f"  {key} starts with {src}'s building ({b.children[1].value if b is not None else 'none'})")
+    print(f"  moved {len(take) - len(staying)} slot records from {spec.parent} (and {len(staying)} within it) ({[moved[k].key for k in moved]}), CAI region "
           f"slots {rids}; {spec.parent} keeps {1 - ps:.0%} of its population, {1 - ws_:.0%} of its wealth")
 
 
@@ -1287,6 +1398,24 @@ def place_footprints(specs, pf_root, sp_root, regions_root) -> dict[int, AreaGri
     src_gi, tpl = FOOTPRINT_TEMPLATE
     src = grid(src_gi)
     reserved: dict[int, set] = {}
+    # split regions may cut obstacle cells whose startpos entries are plain copies (they are
+    # re-copied at the end); snapshot which those are before any cell changes
+    from etwpc.compiler.obstacles import obstacle_copies, refresh_obstacle_copies
+    obs: dict[int, tuple] = {}
+    for spec in specs:
+        if spec.footprints == "carve" and spec.pf_grid not in obs:
+            o = ObstacleSystem(find(sp_root, "CAMPAIGN_PATHFINDER").children[0].children[spec.pf_grid])
+            obs[spec.pf_grid] = (o,) + obstacle_copies(o, grid(spec.pf_grid))
+
+    def geometry(g_, rc):        # a cell's records without pass / unknown2
+        from etwpc.io.esf_types import BoundaryEntry
+        k, j = g_.cell_item[rc[0] * g_.cols + rc[1]]
+        it = g_.items[k]
+        if j or not it.bounds:
+            return ("run", it.pid)
+        return tuple((b.path_type, b.path_id, b.vertex_index)
+                     for b in (BoundaryEntry.from_packed(a, c) for a, c in it.bounds))
+    before = {gi: {rc: geometry(grid(gi), rc) for rc in v[2]} for gi, v in obs.items()}
     blocks: dict[int, list] = {}          # grid -> transplanted footprint centres
     for spec in specs:
         if not spec.footprints:
@@ -1297,7 +1426,7 @@ def place_footprints(specs, pf_root, sp_root, regions_root) -> dict[int, AreaGri
             place_coastal_footprints(spec, g, sp_root, regions_root)
             continue
         if spec.footprints == "carve":
-            place_split_footprints(spec, g, sp_root, regions_root)
+            place_split_footprints(spec, g, sp_root, regions_root, avoid=obs[spec.pf_grid][2])
             continue
         if spec.pf_grid not in reserved:
             osys = ObstacleSystem(find(sp_root, "CAMPAIGN_PATHFINDER").children[0].children[spec.pf_grid])
@@ -1359,6 +1488,14 @@ def place_footprints(specs, pf_root, sp_root, regions_root) -> dict[int, AreaGri
                       for c in range(c0 - FOOTPRINT_RADIUS, c0 + FOOTPRINT_RADIUS + 1)}
         n = refresh_fields(CellView(grids[gi]), sorted(cells))
         print(f"footprints grid {gi}: {n} transplanted record field(s) recomputed")
+    for gi, (o, copies, reshaped) in obs.items():
+        moved = sorted(rc for rc in reshaped if geometry(grids[gi], rc) != before[gi][rc])
+        if moved:
+            print(f"WARNING footprints grid {gi}: {len(moved)} cells with reshaped obstacle entries changed "
+                  f"geometry: {moved[:10]}")
+        n = refresh_obstacle_copies(o, grids[gi], copies, reshaped)
+        o.flush()
+        print(f"footprints grid {gi}: {n} obstacle copies re-copied from their edited cells")
     edited = {s.pf_grid for s in specs}
     return {gi: g for gi, g in grids.items() if gi in edited}
 
@@ -1433,59 +1570,85 @@ def place_coastal_footprints(spec, g: AreaGrid, sp_root, regions_root) -> None:
                 print(f"   WARNING {sl.key}: {e}; slot left without footprint")
 
 
-def place_split_footprints(spec, g: AreaGrid, sp_root, regions_root) -> None:
+def place_split_footprints(spec, g: AreaGrid, sp_root, regions_root, avoid=frozenset()) -> None:
     """Footprints of a region split off a live one (deep_dive 10.5), by the vanilla rule
     (a slot outline IS its regions.esf polygon, 9.11), on land or coast: a moved slot's
     old outline is merged back into land, then the capital's settlement polygon (the
     template's, as patch_regions_esf writes it) and each relocated slot's own polygon are
     carved at the nearest valid site. Slots that stay where they are keep their outlines
-    (split_region.py relabelled them). Interior run cells may be cut; obstacle cells and
-    their 4-neighbours are avoided."""
+    (split_region.py relabelled them). Interior run cells may be cut, and so may obstacle
+    cells whose entries are plain copies; `avoid` = cells holding reshaped entries. Their
+    4-neighbours may only have pass / unknown2 recomputed, which leaves a reshaped entry's
+    geometry valid, so they are allowed."""
     from shapely.geometry import Polygon
     from etwpc.compiler.coastal import (CellView, carve_footprint, check_cells, check_nodes,
-                                        find_outline_site, ring_of, self_test, uncarve_footprint)
-    osys = ObstacleSystem(find(sp_root, "CAMPAIGN_PATHFINDER").children[0].children[spec.pf_grid])
-    avoid = frozenset((p >> 16, p & 0xFFFF) for p, _ in osys.pairs)
+                                        find_outline_site, outline_cells, ring_of, self_test,
+                                        uncarve_footprint)
     rd = regions_root.children[3].children[3]
     names = [region_name(r) for r in rd.children]
     pid = g.pid_of(names.index(spec.name))
+    ppid = g.pid_of(names.index(spec.parent))
     pslots = {sl[0].value: sl for sl in sas_of(rd.children[names.index(spec.parent)]).children[2].children}
     inside = region_ring_inside(regions_root, spec.name)
+    p_inside = region_ring_inside(regions_root, spec.parent)
 
     def poly_at(raw, anchor, xy):
         f = struct.unpack(f"<{len(raw) // 4}f", translate_footprint(raw, anchor, xy))
         return Polygon(list(zip(f[0::2], f[1::2])))
 
     taken = []
+    if spec.capital_slot:
+        # a capital_slot outline in cells the startpos obstacles reshape stays where it is
+        # and becomes the settlement's outline (no cell there may change)
+        src = pslots[spec.capital_slot]
+        here = tuple(src[2].value)
+        if any(rc in avoid for rc in outline_cells(g, poly_at(src[6].raw, here, here))):
+            spec.capital_raw = bytes(src[6].raw)
+            taken.append(poly_at(src[6].raw, here, here))
+            print(f"   footprint {spec.capital_slot}: outline kept as the capital's (obstacle-reshaped cells)")
     for sl in spec.moved:
         src = pslots[sl.src]
         here = tuple(src[2].value)
         old = poly_at(src[6].raw, here, here)
+        if sl.src == spec.capital_slot and spec.capital_raw:
+            continue
         if tuple(sl.pos) != here or sl.src == spec.capital_slot:
-            res = uncarve_footprint(CellView(g), old, pid)
+            # its old outline now carries whichever region's id the split gave that land
+            res = uncarve_footprint(CellView(g), old, pid if inside(*here) else ppid)
             print(f"   footprint {sl.src}: old outline merged back into land ({len(res['cells'])} cells)")
         else:
             taken.append(old)
 
-    def place(xy, label, raw, anchor, min_land):
+    def place(xy, label, raw, anchor, min_land, parent=False):
         view = CellView(g)
         make = lambda x, y: poly_at(raw, anchor, (x, y))
-        x, y, outline = find_outline_site(view, make, xy, pid, inside, min_land=min_land, taken=taken,
-                                          avoid=avoid, allow_run=True)
-        r0, c0 = g.cell_of(x, y)
-        bad = self_test(view, [(r, c) for r in range(r0 - 4, r0 + 5) for c in range(c0 - 4, c0 + 5)])
-        assert not bad, f"{spec.name} {label}: encoding rules do not reproduce cells near {(x, y)}: {bad[:3]}"
-        res = carve_footprint(view, outline, pid, allow_run=True)
-        bad = check_cells(view, res["cells"] + sorted(ring_of(res["cells"]))) + check_nodes(view, res["cells"])
-        assert not bad, f"{spec.name} {label}: carved cells break a vanilla invariant: {bad[:3]}"
+        skip = []
+        while True:      # a site whose carve snaps into a degenerate record is rolled back
+            x, y, outline = find_outline_site(view, make, xy, ppid if parent else pid,
+                                              p_inside if parent else inside, min_land=min_land, taken=taken,
+                                              avoid=avoid, avoid_ring=frozenset(), allow_run=True, skip=skip)
+            r0, c0 = g.cell_of(x, y)
+            bad = self_test(view, [(r, c) for r in range(r0 - 4, r0 + 5) for c in range(c0 - 4, c0 + 5)])
+            assert not bad, f"{spec.name} {label}: encoding rules do not reproduce cells near {(x, y)}: {bad[:3]}"
+            snap = g.snapshot()
+            res = carve_footprint(view, outline, ppid if parent else pid, allow_run=True)
+            bad = check_cells(view, res["cells"] + sorted(ring_of(res["cells"]))) + check_nodes(view, res["cells"])
+            if not bad:
+                break
+            assert len(skip) < 20, f"{spec.name} {label}: carved cells break a vanilla invariant: {bad[:3]}"
+            g.restore(snap)
+            view = CellView(g)
+            skip.append((x, y))
+            print(f"   site ({x:.3f}, {y:.3f}) for {label} rejected: {bad[0]}")
         taken.append(outline)
         print(f"   carved footprint {label}: {xy} -> ({x:.3f}, {y:.3f}), outline area {res['area']:.3f} over "
               f"{len(res['cells'])} cells, {res['vertices_added']} vertices added")
         return (x, y)
 
     old_cap = spec.capital
-    raw, anchor = template_outline(regions_root, spec, "capital")
-    spec.capital = place(old_cap, "capital", raw, anchor, 0.7)
+    if not spec.capital_raw:
+        raw, anchor = template_outline(regions_root, spec, "capital")
+        spec.capital = place(old_cap, "capital", raw, anchor, 0.7)
     ddx, ddy = spec.capital[0] - old_cap[0], spec.capital[1] - old_cap[1]
     for sl in spec.slots:
         if sl.kind.startswith("settlement_"):
@@ -1493,7 +1656,11 @@ def place_split_footprints(spec, g: AreaGrid, sp_root, regions_root) -> None:
     for sl in spec.moved:
         src = pslots[sl.src]
         if tuple(sl.pos) != tuple(src[2].value):
-            sl.pos = place(sl.pos, sl.key, src[6].raw, tuple(src[2].value), 0.5)
+            sl.pos = place(sl.pos, sl.key, src[6].raw, tuple(src[2].value), 0.5, parent=sl.stay)
+    for sl in spec.slots:
+        if sl.kind in ("town", "resource"):
+            raw, anchor = template_outline(regions_root, spec, sl.kind)
+            sl.pos = place(sl.pos, sl.key, raw, anchor, 0.5)
     print(f"footprint {spec.name}: capital {old_cap} -> {spec.capital} (carved, path id {pid})")
 
 
@@ -1697,6 +1864,8 @@ def repaint_lookup(regions_root, specs, tga: Path, theatre_flag: int = 2) -> byt
     for spec in specs:
         if spec.theatre_flag != theatre_flag:
             continue
+        if spec.positions is not None and spec.parent is not None:
+            assert tuple(spec.colour) not in pal, f"{spec.name}: colour {spec.colour} is already in the lookup palette"
         if tuple(spec.colour) not in pal and spec.positions is not None:
             # a new region's colour: claim a palette entry no pixel uses (vanilla
             # europe_lookup uses 150 of 256; the rest are spare black/white entries)
@@ -1752,9 +1921,9 @@ def db_pack(specs: list[RegionSpec], out: Path, loc: bytes | None, tag: str = "n
     sett = make_db([ws(s.settlement_key) + ws(s.name) + ws(s.settlement_display)
                     + struct.pack("<I", s.settlement_tier) + ws("settlement") for s in specs])
     slots = make_db([ws(sl.key) + ws(s.name) + ws(sl.slot_type) + ws("") + ws("") + b"\x00"
-                     for s in specs for sl in s.slots + s.moved if sl.kind == "resource"])
+                     for s in specs for sl in s.slots + [m for m in s.moved if m.key != m.src] if sl.kind == "resource"])
     towns = make_db([ws(sl.key) + ws(sl.slot_type) + ws(sl.display)
-                     for s in specs for sl in s.slots + s.moved if sl.kind == "town"])
+                     for s in specs for sl in s.slots + [m for m in s.moved if m.key != m.src] if sl.kind == "town"])
     files = [
         (f"db\\regions_tables\\{tag}_regions", regions),
         (f"db\\campaign_map_settlements_tables\\{tag}_settlements", sett),
@@ -1790,8 +1959,8 @@ def loc_entries(specs: list[RegionSpec]) -> dict[str, str]:
     for s in specs:
         out[f"regions_onscreen_{s.name}"] = s.region_display
         out[f"start_pos_settlements_onscreen_name_{s.settlement_key}"] = s.settlement_display
-        for sl in s.slots + s.moved:
-            if sl.kind == "town":
+        for sl in s.slots + [m for m in s.moved if m.display]:
+            if sl.kind in ("town", "port"):
                 out[f"campaign_map_towns_and_ports_onscreen_name_{sl.key}"] = sl.display
             elif sl.kind == "resource":
                 out[f"campaign_map_slots_onscreen_{sl.key}"] = sl.display
