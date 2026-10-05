@@ -1646,3 +1646,39 @@ Interior rivers never straddle two land regions (0 of 157), so a cut that meets 
 Test: new France campaign: Occitania shows on map / minimap / lists with Toulouse,
 Carcassonne, Bordeaux; armies cross the border both ways (including along the Rhône),
 enter and leave Toulouse; land on the Languedoc coast; several end turns.
+
+### 10.6 Obstacle copies, and `batch1_s3_unlocked` (2026-10-06)
+
+Startpos `OBSTACLE_BOUNDARIES` entries come in two kinds. In a cell wholly inside an
+obstacle's zone each entry is an exact copy of the cell's pathfinding records (a run cell:
+one full-cell record) and the grid node's [1] is the cell's record count (9,862 of 9,862).
+In a cell the zone's edge crosses, the entries are reshaped (type-8 parts, vertices in
+startpos's own store). The big zones on grid 2 are `CHARACTER_OBSTACLE`s: two French
+armies' zones of roughly 20 x 24 units cover nearly all of Provence and the Lyonnais
+(5,592 reshaped cells on the grid).
+
+`obstacles.obstacle_copies` records which is which before the footprints are carved, and
+`refresh_obstacle_copies` re-copies every copy entry whose cell changed (66 in this build).
+Split footprints may cut copy cells but not reshaped ones. A reshaped 4-neighbour is
+allowed, because only its pass / unknown2 fields are recomputed. The build warns if any
+reshaped cell's geometry changed (none did).
+
+* Vanilla grid 2 r105 c94 has two vertex ids one fixed-point unit apart at (10.0, 350.75),
+  a zero-width spike. `check_nodes` now treats coincident points as one, and `commit_plan`
+  keeps a re-noded record's own vertex ids.
+* A carve that fails the cell invariants is rolled back (`AreaGrid.snapshot / restore`)
+  and the next site is tried.
+* When a `capital_slot` outline lies in reshaped cells (Lyon), the capital keeps that
+  outline in place as its settlement polygon (area 3.11, which matches its type-7 record).
+* The Rhône valley around Valence is all reshaped cells. The Lyonnais' one clean cell
+  pair sits west of Lyon, so Lyon's town slot moves to Montbrison (capital of the Forez).
+
+Result (`split_region.py --split occitania batch1`, then S3, then `unlock_factions.py`):
+Brittany (Rennes; Brest, Nantes, Brittany Farmland), Normandy (Rouen at (7.24, 351.01);
+Mont-Saint-Michel starts with a church school; Le Havre), Provence (Aix at (39.27, 311.71);
+Marseille), Lyonnais (Lyon; Montbrison), Burgundy (Dijon; Auxerre), Andorra (Andorra la
+Vella; Spain's Andorra town moves to Urgell and stays Spanish). Path ids 87-92. Checks:
+regions.esf rules exact, field-rule misses 229 (vanilla 232), obstacle ids 63,081 valid,
+`verify_obstacles` clean on all grids, startpos errors identical to the tested Occitania
+build. Known gap: Provence has no border strip with the Lyonnais or Occitania (the border
+runs through reshaped cells), so 12 records of two regions touch directly there.
