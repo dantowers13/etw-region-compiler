@@ -1562,3 +1562,56 @@ map fix without any Canaries footprint, i.e. m3b + fix).
 If 1 passes and 2 fails, test `canaries_m5nofp_unlocked`: landing works there -> the carve is
 still at fault; it fails there too -> the cause is elsewhere (it worked in m3b, which had the
 same footprint-less islands but the broken map).
+
+## 10. 2026-10-05: splitting a mainland region (France batch)
+
+The Canaries worked in game (all tests pass; fog of war deferred). Next phase (memory
+etw-split-decisions): openETW-scale splits through a general tool, starting with France.
+Batch 1, approved on its review map (France, Occitania, Brittany, Normandy, Burgundy with
+Franche-Comté, Lyonnais with Dauphiné, Provence, plus Andorra from Spain). Occitania is built
+and tested alone first. A mainland split differs from the Canaries in three derived layers
+the Canaries never touched: cutting one area in `regions.esf` (mesh, outlines, quadtree), a
+new land border in pathfinding (border group id), and AI adjacency between parent and child.
+
+### 10.1 Borders on a distorted map
+
+The campaign map is not a projection of real geography. A quadratic fit lon/lat -> map
+coordinates over France's 13 named cities is good to 1.5 map units (rms) in the south,
+but the north-west is off by several units (the Cotentin, the Seine inlet that runs to
+x 13.5, the Loire inlet), so those borders are traced in map coordinates. Region pieces are
+assigned in order (Occitania by a ~1700 polyline, then polygons), France keeps the rest, and
+stray crumbs below 3 units² (river-inlet slivers) merge into the neighbour they border most.
+
+### 10.2 `regions.esf` area records
+
+Region record: `[name, type (land/sea/river), bbox min, bbox max, areas, theatre flag,
+settlement_and_slots]`. Area record (10 fields): `[0] [1]` False, `[2]` True on the main
+area only, `[3] [4]` bbox, `[5]` a class id (not unique: 13 on France's mainland and 94 other
+areas; 0..856 all used), `[6] faces` = a triangle list over the vertex table that groups of
+areas share verbatim (France: areas 0-7 one 1,751-triangle list, 8-11 another),
+`[7] outlines` = closed rings (coast/borders) plus open polylines (rivers, `[0]` False),
+`[8]` 65535 on the main area, ~190 on mountain sub-areas, `[9]` 104 on all of France's.
+
+Outline `connectivity` = run-length list along the ring: `[neighbour region<<16|area,
+first vertex, last vertex]` per stretch (France's coast ring: 34 runs: channel, Biscay,
+Spain, each Pyrenees sub-area, Mediterranean, Savoy, Alsace, Flanders, river region `all`).
+
+### 10.3 The `query_info` quadtree, decoded exactly
+
+3,685 nodes, 2,764 leaves; every node stores its own `[lo, hi]`, children in the order
+bottom_left, top_left, bottom_right, top_right; a leaf is a node `[lo, hi, cell]` with
+`cell = [point, default region<<16|area, segments (v1, v2, tagA, tagB) * n]`.
+
+* **Default** = the region/area containing the cell's stored point: 2,764 of 2,764. The point
+  is the leaf's bottom-left corner, except in 149 leaves where the builder moved it to a fixed
+  fraction of the box (136 at mid-height on the left edge), presumably off an edge.
+* **Membership** = every outline edge (undirected) whose overlap with the leaf box has
+  positive length: 0 missed, 0 extra over all leaves. Touching at a point does not count.
+* **Sides**: for a stored `(a, b, A, B)`, B is the area whose outline runs a->b and A the area
+  whose outline runs b->a (47,087 of 47,087 edges with both owners). An edge may be stored in
+  opposite directions in neighbouring leaves (1,541 are); the reversed copy swaps the tags.
+* Only 184 outline edges are stored nowhere: 20-unit edges of sea-region outlines.
+
+So a split can update the tree locally and exactly: add the new border edges to every leaf
+they overlap, split the coast / river edges the border crosses, re-tag edges by which area's
+outline runs each way, and recompute defaults from the stored points.
