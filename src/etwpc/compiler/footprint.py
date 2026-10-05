@@ -225,6 +225,16 @@ class AreaGrid:
         return {"cells": len(new_specs), "records": n_rec, "vertices": len(vmap),
                 "dropped": dict(dropped_total), "template_pid": local_pid, "offset_cells": (dr, dc)}
 
+    def snapshot(self):
+        """State that _apply / _add_vertex / vlist appends change, for restore()."""
+        return list(self.items), len(self.vlist), len(self.vx)
+
+    def restore(self, snap) -> None:
+        items, nv, nx = snap
+        self.items = list(items)
+        del self.vlist[nv:], self.vx[nx:], self.vy[nx:], self.verts_node.children[nx:]
+        self._index()
+
     def _add_vertex(self, x: float, y: float) -> int:
         self.verts_node.children.append([ESFPrimitive(T_I4, int(round(x * FIXED)), b""),
                                          ESFPrimitive(T_I4, int(round(y * FIXED)), b"")])

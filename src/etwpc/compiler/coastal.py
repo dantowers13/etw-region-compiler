@@ -279,22 +279,25 @@ class Terrain:
 
 
 def find_outline_site(view: CellView, make, near, land_pid: int, inside, *, radius=4.0, step=0.05,
-                      sea_margin=0.15, min_land=0.7, gap=0.1, taken=(), avoid=frozenset(), allow_run=False):
+                      sea_margin=0.15, min_land=0.7, gap=0.1, taken=(), avoid=frozenset(), avoid_ring=None,
+                      allow_run=False, skip=()):
     """Nearest lattice point to `near` where the outline make(x, y) is a vanilla-like
-    footprint: inside the region, over header cells only (none of them or their
-    4-neighbours in `avoid`), at least `sea_margin` from every sea record, overlapping no
+    footprint: inside the region, over header cells only (none of them in `avoid`, none of
+    their 4-neighbours in `avoid_ring`, which defaults to `avoid`), at least `sea_margin` from every sea record, overlapping no
     other region's land and no slot outline, `gap` clear of the outlines in `taken`, at
     least `min_land` of it on land of `land_pid` (the rest impassable), and with no vertex
-    on a cell edge. Returns (x, y, outline)."""
+    on a cell edge. Points in `skip` are passed over. Returns (x, y, outline)."""
     g = view.g
+    avoid_ring = avoid if avoid_ring is None else avoid_ring
     reach = int(radius / g.cs) + 3
     ter = Terrain(view, near, land_pid, reach)
     taken_u = unary_union(list(taken)) if taken else None
     n = int(radius / step)
     cands = sorted(((i * i + j * j), near[0] + i * step, near[1] + j * step)
                    for i in range(-n, n + 1) for j in range(-n, n + 1) if i * i + j * j <= n * n)
+    skip = {(round(x, 6), round(y, 6)) for x, y in skip}
     for _, x, y in cands:
-        if not inside(x, y):
+        if (round(x, 6), round(y, 6)) in skip or not inside(x, y):
             continue
         poly = make(x, y)
         if poly.distance(ter.sea) < sea_margin:
@@ -307,7 +310,7 @@ def find_outline_site(view: CellView, make, near, land_pid: int, inside, *, radi
             continue
         cells = outline_cells(g, poly)
         if any((rc in ter.run_cells and not (allow_run and view.get(*rc)[1] == land_pid)) or rc in avoid
-               for rc in cells) or any(rc in avoid for rc in ring_of(cells)):
+               for rc in cells) or any(rc in avoid_ring for rc in ring_of(cells)):
             continue
         if any(min(abs((px - g.ox) / g.cs - round((px - g.ox) / g.cs)),
                    abs((py - g.oy) / g.cs - round((py - g.oy) / g.cs))) < 1e-3
@@ -346,7 +349,9 @@ def _node(poly: Polygon, pool) -> Polygon:
 
 
 def check_nodes(view: CellView, cells) -> list[str]:
-    """Within each cell, a vertex lying inside another record's edge (a T-junction)."""
+    """Within each cell, a vertex lying inside another record's edge (a T-junction). A vertex
+    at the same point (to a few fixed-point units) as an edge end is not one: vanilla has
+    distinct ids at one point (grid 2 r105 c94, a zero-width spike)."""
     g = view.g
     bad = []
     for r, c in cells:
@@ -360,7 +365,10 @@ def check_nodes(view: CellView, cells) -> list[str]:
                 z = q.ents[(k + 1) % len(q.ents)]
                 seg = LineString([pts[a], pts[z]])
                 for e, p in pts.items():
-                    if e not in (a, z) and seg.distance(Point(p)) < 1e-6:
+                    if e in (a, z) or any(abs(p[0] - w[0]) < 4e-6 and abs(p[1] - w[1]) < 4e-6
+                                          for w in (pts[a], pts[z])):
+                        continue
+                    if seg.distance(Point(p)) < 1e-6:
                         bad.append(f"r{r} c{c} rec {i} t{q.t}: vertex {e} lies on edge {a}-{z}")
     return bad
 
@@ -445,12 +453,15 @@ def uncarve_footprint(view: CellView, outline: Polygon, land_pid: int) -> dict:
     return commit_plan(view, plan)
 
 
-def commit_plan(view: CellView, plan: dict) -> dict:
+def commit_plan(view: CellView, plan: dict, extra_pool: dict | None = None) -> dict:
     """Write `plan` = {cell: [(path_type, path_id, local polygon, original Rec or None)]}
     back to the grid: new records get vertex lists (shared fixed-point vertices, rings noded
     where records meet, corner markers), original ones keep theirs (a changed path id is
     kept), and pass / unknown2 are recomputed for the cells and their 4-neighbours. A cell
-    may have been a run cell; it becomes a header cell with its own 8-byte header."""
+    may have been a run cell; it becomes a header cell with its own 8-byte header. An
+    original record listed with a different path id is relabelled. `extra_pool` adds
+    points (cell-local) at which a cell's records must carry a vertex: a neighbour's new
+    vertices on the shared cell edge."""
     g = view.g
     ring = ring_of(plan)
 
@@ -490,19 +501,40 @@ def commit_plan(view: CellView, plan: dict) -> dict:
             ents.pop()
         return ents
 
+    def encode_keep(noded: Polygon, orig, ox, oy) -> list[int]:
+        # an original record re-noded: its own points keep their ids (vanilla has distinct ids
+        # at one point, e.g. a zero-width spike, that a lookup by position would merge)
+        own = list(orig.poly.exterior.coords)[:-1]
+        if len(own) != len(orig.ents):
+            return encode(noded, ox, oy)
+        ents, k = [], 0
+        for px, py in list(noded.exterior.coords)[:-1]:
+            if k < len(own) and abs(px - own[k][0]) < 1e-9 and abs(py - own[k][1]) < 1e-9:
+                ents.append(orig.ents[k])
+                k += 1
+            else:
+                corner = next((n for n, (cx_, cy_) in CORNERS.items()
+                               if abs(px - cx_) < 1e-6 and abs(py - cy_) < 1e-6), None)
+                ents.append(corner if corner is not None else vertex(ox + px, oy + py))
+        return ents if k == len(own) else encode(noded, ox, oy)
+
     new_ids = set()
     for (r, c), recs in plan.items():
         ox, oy = view.origin(r, c)
         pool = [xy for _, _, poly, _ in recs for xy in list(poly.exterior.coords)[:-1]]
+        pool += (extra_pool or {}).get((r, c), [])
         out = []
         for t, pid, poly, orig in recs:
             if orig is not None:
+                if orig.be.path_id != pid:
+                    orig.be.path_id = pid
                 noded = _node(orig.poly, pool)
                 if len(noded.exterior.coords) == len(orig.poly.exterior.coords):
                     out.append(orig)
                     continue
-                poly = noded                  # a new vertex lies on one of its edges: re-encode it
-            ents = encode(_node(poly, pool), ox, oy)
+                ents = encode_keep(noded, orig, ox, oy)   # a new vertex lies on one of its edges
+            else:
+                ents = encode(_node(poly, pool), ox, oy)
             pts = [CORNERS[e] if e in CORNERS else (g.vx[e] - ox, g.vy[e] - oy) for e in ents]
             rec = Rec(BoundaryEntry(pid, 0, 0, 0, t), ents, Polygon(pts))
             new_ids.add(id(rec))

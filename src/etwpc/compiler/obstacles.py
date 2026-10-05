@@ -455,3 +455,64 @@ def verify_obstacles(sys_: ObstacleSystem, seq: list[int], cols: int) -> list[st
                     errs.append(f"obstacle {it[1].value} references boundary entry "
                                 f"{raw & ~RING_FLAG} of {n_entries}")
     return errs
+
+
+def obstacle_copies(osys: ObstacleSystem, grid) -> tuple[dict, set]:
+    """Which OBSTACLE_BOUNDARIES entries are plain copies of their cell's pathfinding
+    records (deep_dive 10.6): in a cell wholly inside an obstacle's zone every entry is an
+    exact copy of the cell's records (a run cell's: one full-cell record), and the node's
+    [1] is the cell's record count (9,862 of 9,862). A cell the zone's edge crosses holds
+    reshaped entries (type 8 parts, vertices in startpos's own store) and must not change.
+    Returns ({cell: [entry index]} for copies, {cells holding a reshaped entry})."""
+    from etwpc.io.esf_types import BoundaryEntry
+    copies, reshaped = {}, set()
+    for packed, ni in osys.pairs:
+        rc = (packed >> 16, packed & 0xFFFF)
+        k, j = grid.cell_item[rc[0] * grid.cols + rc[1]]
+        it = grid.items[k]
+        cell = None if (j or not it.bounds) else [x for ab in it.bounds for x in ab]
+        for e in _mobs(osys.nodes.children[ni])[0].children:
+            ei = e[0].value
+            pairs = osys.entries[ei].pairs
+            if cell is not None:
+                ok = pairs == cell
+            else:
+                bes = [BoundaryEntry.from_packed(pairs[i], pairs[i + 1]) for i in range(0, len(pairs), 2)]
+                ok = len(bes) == 1 and bes[0].path_type == 0 and bes[0].path_id == it.pid
+            if ok:
+                copies.setdefault(rc, []).append(ei)
+            else:
+                reshaped.add(rc)
+    return copies, reshaped
+
+
+def refresh_obstacle_copies(osys: ObstacleSystem, grid, copies: dict, reshaped: set) -> int:
+    """Re-copy the cell records into every copy entry whose cell changed since
+    obstacle_copies(), and set each such node's record count. Call flush() after."""
+    from etwpc.io.esf_types import BoundaryEntry
+    node_of = {(p >> 16, p & 0xFFFF): i for p, i in osys.pairs}
+    n = 0
+    for rc, eis in copies.items():
+        if rc in reshaped:
+            continue
+        k, j = grid.cell_item[rc[0] * grid.cols + rc[1]]
+        it = grid.items[k]
+        if j or not it.bounds:
+            for ei in eis:
+                pairs = list(osys.entries[ei].pairs)
+                be = BoundaryEntry.from_packed(pairs[0], pairs[1])
+                if be.path_id != it.pid:
+                    be.path_id = it.pid
+                    pairs[0], pairs[1] = be.to_packed()
+                    osys.entries[ei].pairs = pairs
+                    n += 1
+            nrec = 1
+        else:
+            cell = [x for ab in it.bounds for x in ab]
+            for ei in eis:
+                if osys.entries[ei].pairs != cell:
+                    osys.entries[ei].pairs = list(cell)
+                    n += 1
+            nrec = len(it.bounds)
+        _set_int(osys.nodes.children[node_of[rc]][1], nrec)
+    return n
