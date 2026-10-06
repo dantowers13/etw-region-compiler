@@ -367,13 +367,13 @@ SPECS: dict[str, RegionSpec] = {s.name: s for s in [
                    "middle_east_and_europe"],
     ),
     RegionSpec(
-        # Lyon becomes the capital; its town slot moves to Montbrison (Forez): the Rhone
-        # valley (Valence) is all obstacle-reshaped cells, and this is the one clean run cell
-        # (no settlement diamond fits anywhere in the Lyonnais' clean cells, deep_dive 10.10)
+        # Lyon becomes the capital; its town slot moves to Valence in the Rhone valley, as
+        # approved. Needs a base without the saved unit zones over the Lyonnais (clear_zones.py,
+        # deep_dive 10.11): with them the valley was all reshaped cells.
         name="lyonnais", theatre_flag=2, pf_grid=2, theatre_name="europe", template="alsace",
         region_display="Lyonnais", settlement_key="settlement:lyonnais:lyon", settlement_display="Lyon",
         slot_map={}, donor_settlement_key="", parent="france", capital_slot="town:france:lyons",
-        transfers={"town:france:lyons": ("town:lyonnais:montbrison", "Montbrison", (29.0, 323.05))},
+        transfers={"town:france:lyons": ("town:lyonnais:valence", "Valence", (36.4, 318.3))},
         parent_share=(0.10, 0.12), positions={}, footprints="carve",
         owner_faction="france", emergent_nation="french_rebels", rebels_name="Lyonnais Rebels",
         culture="sc_european_south", population=(0, 0, 0), colour=(226, 158, 11),
