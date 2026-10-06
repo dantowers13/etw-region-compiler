@@ -363,6 +363,9 @@ def check_nodes(view: CellView, cells) -> list[str]:
         for i, q in enumerate(recs):
             for k, a in enumerate(q.ents):
                 z = q.ents[(k + 1) % len(q.ents)]
+                if a == z:                  # vanilla never repeats an id (deep_dive 10.12)
+                    bad.append(f"r{r} c{c} rec {i} t{q.t}: vertex {a} repeated")
+                    continue
                 seg = LineString([pts[a], pts[z]])
                 for e, p in pts.items():
                     if e in (a, z) or any(abs(p[0] - w[0]) < 4e-6 and abs(p[1] - w[1]) < 4e-6
@@ -516,7 +519,14 @@ def commit_plan(view: CellView, plan: dict, extra_pool: dict | None = None) -> d
                 corner = next((n for n, (cx_, cy_) in CORNERS.items()
                                if abs(px - cx_) < 1e-6 and abs(py - cy_) < 1e-6), None)
                 ents.append(corner if corner is not None else vertex(ox + px, oy + py))
-        return ents if k == len(own) else encode(noded, ox, oy)
+        if k != len(own):
+            return encode(noded, ox, oy)
+        # a new point snapped onto a neighbouring own vertex repeats that id; vanilla never
+        # repeats an id (its 54 zero-length edges are distinct ids), and a repeat handed the
+        # campaign triangulator a degenerate polygon (units entering Rouen / Mont-Saint-Michel
+        # crashed at Empire.exe+0x75705c / +0x758d8c, deep_dive 10.12)
+        out = [e for i, e in enumerate(ents) if e != ents[i - 1]] if len(ents) > 1 else ents
+        return out
 
     new_ids = set()
     for (r, c), recs in plan.items():
