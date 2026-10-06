@@ -369,6 +369,7 @@ SPECS: dict[str, RegionSpec] = {s.name: s for s in [
     RegionSpec(
         # Lyon becomes the capital; its town slot moves to Montbrison (Forez): the Rhone
         # valley (Valence) is all obstacle-reshaped cells, and this is the one clean run cell
+        # (no settlement diamond fits anywhere in the Lyonnais' clean cells, deep_dive 10.10)
         name="lyonnais", theatre_flag=2, pf_grid=2, theatre_name="europe", template="alsace",
         region_display="Lyonnais", settlement_key="settlement:lyonnais:lyon", settlement_display="Lyon",
         slot_map={}, donor_settlement_key="", parent="france", capital_slot="town:france:lyons",
@@ -1369,6 +1370,73 @@ def patch_trade_network(root, new_names: list[str]) -> None:
           f"{len(added)} land links: {', '.join(added)}")
 
 
+def resituate(root, regions_root, specs) -> None:
+    """Every CAI_SITUATED (the AI's position record for armies, agents, slots: x, y, region
+    AI id, theatre ids) standing in a split-off region but still naming its parent is moved
+    to the child. transfer_startpos does this for moved slots only; the two French armies
+    near Lyon stayed 'in France' inside the Lyonnais / Burgundy, and selecting one hung the
+    game (deep_dive 10.10)."""
+    cwr = {find(it, "CAI_REGION").children[10].value: it for it in find(root, "CAI_WORLD_REGIONS").children}
+    moved = []
+    for spec in specs:
+        if spec.parent is None:
+            continue
+        inside = region_ring_inside(regions_root, spec.name)
+        p_ai, c_ai = cwr[spec.parent][2].value, cwr[spec.name][2].value
+        theatre = list(find(cwr[spec.name], "CAI_REGION").children[0].value)
+        for sit in find_all(root, "CAI_SITUATED"):
+            if sit.children[2].value == p_ai and inside(sit.children[0].value / FIXED, sit.children[1].value / FIXED):
+                set_int(sit.children[2], c_ai)
+                set_list(sit.children[3], theatre)
+                moved.append(f"{spec.name}@({sit.children[0].value / FIXED:.2f},{sit.children[1].value / FIXED:.2f})")
+    print(f"CAI_SITUATED re-pointed to the split region they stand in: {len(moved)} {moved}")
+
+
+def trade_endpoint_regions(root) -> dict[int, int]:
+    """Transport-graph node id -> REGION id of the region that holds it now: a port node by
+    the region whose REGION_SLOT list carries its key, a settlement node by its region.
+    Sea waypoints (TRADE_NODES) belong to no region."""
+    tm = find(root, "CAMPAIGN_TRADE_MANAGER")
+    rid_by_name, rid_by_slot = {}, {}
+    for it in find(root, "REGIONS_ARRAY").children:
+        R = find(it, "REGION")
+        rid_by_name[R.children[0].value] = R.children[4].value
+        for s in R.children[3].children[0].children:
+            rid_by_slot[s[0].children[3].value] = R.children[4].value
+    out = {it[1].value: rid_by_slot[it[0].value] for it in find(tm, "PORT_INDICES").children}
+    out.update({it[1].value: rid_by_name[it[0].value] for it in find(tm, "SETTLEMENT_INDICES").children})
+    return out
+
+
+def stale_trade_routes(root) -> list[tuple]:
+    """Stored INTERNATIONAL_TRADE_ROUTEs whose region id is not the region holding the
+    endpoint it is paired with: [1] goes with start node [3], [6] with end node [4]
+    (vanilla: 74 of 74 match, including Mughal's route from Mesopotamia). On load the
+    engine looks the node up among that region's ports and settlements and hashes the
+    result, so a stale one is a null-key crash (Empire.exe+0x51470 via +0x5e0bf6)."""
+    where = trade_endpoint_regions(root)
+    bad = []
+    for r in find_all(root, "INTERNATIONAL_TRADE_ROUTE"):
+        for ri, ni in ((1, 3), (6, 4)):
+            want = where.get(r.children[ni].value)
+            if want is not None and r.children[ri].value != want:
+                bad.append((r, ri, ni, want))
+    return bad
+
+
+def patch_trade_routes(root) -> None:
+    """Re-point stored trade routes at the region now holding their endpoint. A split
+    moves the parent's port slots into the child under their old keys (port:france:
+    le_havre is Normandy's), and France's, Louisiana's and Sweden's routes through Le Havre
+    still named France: batch1_s3_unlocked crashed once the loading bar finished."""
+    bad = stale_trade_routes(root)
+    for r, ri, ni, want in bad:
+        set_int(r.children[ri], want)
+    print(f"trade routes: {len(bad)} region ids re-pointed to the endpoint's region "
+          f"(nodes {sorted({r.children[ni].value for r, _, ni, _ in bad})})")
+    assert not stale_trade_routes(root)
+
+
 # Settlement / slot footprints in pathfinding.esf (deep_dive 7.8, 7.9, 8.16).
 # Every vanilla settlement and slot carries one; void regions carry none, which is
 # why armies can enter a new settlement but never leave it, and why the engine
@@ -2094,6 +2162,8 @@ def main():
         add_fort_obstacles(sp_root, grids[spec.pf_grid], regions_root, spec, ids,
                            owner_id, region_item, cai_region_ai_id, mode=a.obstacles)
     patch_trade_network(sp_root, [s.name for s in specs])
+    patch_trade_routes(sp_root)
+    resituate(sp_root, regions_root, specs)
     built = {s.name for s in specs}
     for region, owner, gov_like, cap_to, trigger in TRANSFERS:
         if trigger in built and not a.no_transfers:
