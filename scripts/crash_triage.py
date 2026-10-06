@@ -40,14 +40,23 @@ KNOWN = {
     0x00c98d72: "WS_LOADING_SCREEN_IMP::pf_on_create null (DME launcher, not the mod)",
     0x0040317c: "vcall [eax+8] on element with null vtable while iterating an array (unlock_factions test)",
     0x004a2677: "[ecx+0x10][idx] null table (unlock_factions test)",
-    0x00051470: "integer hash of a null key during PATHFINDING_GRID load: a grid node's MANAGED_OBSTACLE_BOUNDARY "
-                "references an OBSTACLE_BOUNDARIES entry index that is out of range (Oct 1 new_regions; see "
-                "deep_dive 8.14)",
+    0x00051470: "integer hash of a null key (shared; see the caller line below). Oct 1 new_regions hit it from the "
+                "hash-map find at +0x733820 during PATHFINDING_GRID load: an out-of-range OBSTACLE_BOUNDARIES "
+                "entry index (deep_dive 8.14)",
     0x006f6b00: "read of 0x3f800008 walking an obstacle cell list: two grid nodes resolve to the same cell because a "
                 "node references boundary entries of ANOTHER cell (unremapped donor indices; Oct 1 "
                 "arabia_manager_fix; deep_dive 8.14)",
+    0x00758ff6: "pathfinder path-straightening (funnel) looped until its array doubling failed (memory/disk climbs, "
+                "game freezes first): two regions' land touching with no border strip (Oct 6 batch1, Lyonnais/"
+                "Burgundy; deep_dive 10.8)",
     0x0064f66f: "AI region route step: region missing from the AI region-graph map (great_plains/new_mexico, whose "
                 "only land neighbours were dormant; Oct 1 new_regions_noobs; deep_dive 8.14)",
+}
+
+# Shared functions (the hash at +0x51470) are told apart by the first return address.
+KNOWN_CALLERS = {
+    0x005e0bfb: "stored INTERNATIONAL_TRADE_ROUTE names a region that does not hold its port/settlement node, "
+                "after the loading bar (Oct 6 batch1_s3_unlocked: Le Havre moved to Normandy; deep_dive 10.7)",
 }
 
 
@@ -130,6 +139,8 @@ def parse(path: str, exe: bytes | None):
             if prev and (prev[0] == 0xE8 or 0xFF in prev[:4]):
                 rets.append(f"+{v - exe_mod[0]:#x}")
     print("   probable return addresses:", rets[:10])
+    if rets and int(rets[0][1:], 16) in KNOWN_CALLERS:
+        print("   caller:", KNOWN_CALLERS[int(rets[0][1:], 16)])
 
 
 def main():
