@@ -516,3 +516,49 @@ def refresh_obstacle_copies(osys: ObstacleSystem, grid, copies: dict, reshaped: 
             nrec = len(it.bounds)
         _set_int(osys.nodes.children[node_of[rc]][1], nrec)
     return n
+
+
+# A part's vertex_index with this bit set names a polygon in the grid's own startpos store
+# (PATHFINDING_GRID[1]) instead of a pathfinding.esf vertex list (deep_dive 10.8).
+STORE_FLAG = 1 << 21
+
+
+def store_polygons(grid: ESFNode) -> list[list[tuple[float, float]]]:
+    """PATHFINDING_GRID[1]: polygons laid out [n, (x, y) * n, trailer], absolute map
+    coordinates in signed 1/2^20 units; PATHFINDING_GRID[0] is the polygon count. A part
+    whose vertex_index is STORE_FLAG + k uses polygon k (11,992 of 11,992 on grid 2 lie
+    inside the part's own cell)."""
+    v = list(grid[1].value)
+    s32 = lambda u: u - (1 << 32) if u >= 1 << 31 else u
+    out, p = [], 0
+    while p < len(v):
+        n = v[p]
+        out.append([(s32(v[p + 1 + 2 * i]) / FIXED, s32(v[p + 2 + 2 * i]) / FIXED) for i in range(n)])
+        p += 2 + 2 * n
+    assert len(out) == grid[0].value, (len(out), grid[0].value)
+    return out
+
+
+def part_polygon(g, store, be, cell):
+    """Absolute shapely polygon of one OBSTACLE_BOUNDARIES part of `cell` (row, col): a
+    startpos store polygon, or a pathfinding.esf vertex list (corner markers 0-3 resolved
+    against the cell). None if it does not decode to a polygon inside the cell."""
+    from shapely.geometry import Polygon
+    from etwpc.compiler.coastal import CORNERS
+    r, c = cell
+    x0, y0 = g.ox + c * g.cs, g.oy + r * g.cs
+    vi = be.vertex_index
+    if vi >= STORE_FLAG:
+        k = vi - STORE_FLAG
+        pts = store[k] if k < len(store) else []
+    elif vi < len(g.vlist) and vi + g.vlist[vi] < len(g.vlist):
+        ents = g.vlist[vi + 1: vi + 1 + g.vlist[vi]]
+        pts = [(x0 + CORNERS[e][0], y0 + CORNERS[e][1]) if e in CORNERS else
+               (g.vx[e], g.vy[e]) if e < len(g.vx) else (float("nan"), 0.0) for e in ents]
+    else:
+        pts = []
+    if len(pts) < 3 or not all(x0 - 1e-3 <= x <= x0 + g.cs + 1e-3 and y0 - 1e-3 <= y <= y0 + g.cs + 1e-3
+                               for x, y in pts):
+        return None
+    poly = Polygon(pts)
+    return poly if poly.is_valid and poly.area > 0 else poly.buffer(0) if poly.area > 0 else None
