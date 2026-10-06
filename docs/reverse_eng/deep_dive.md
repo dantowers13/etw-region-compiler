@@ -1787,3 +1787,66 @@ per click) and wants it removed: a separate step (fort / obstacle / CAI / garris
   Burgundy still named France. `resituate` re-points every CAI_SITUATED inside a split region
   that names its parent. `CHARACTER` records hold no region id. Build `batch1e` = batch1c +
   this (pathfinding / regions byte-identical to batch1c).
+
+### 10.11 Removing the saved unit zones before splitting (2026-10-06)
+
+All five hangs / crashes (Lyon army, the rake, two Britain end turns, Fort Maubeuge) are the
+zone-outline routine (+0x6fe1c0 -> +0x757f50/+0x757c20 -> triangulator) failing over cells a
+saved zone covers, where the split could only relabel. A CHARACTER_OBSTACLE is that saved zone,
+keyed by the unit's id (the CHARACTER record holds no reference to it); the game recomputes a
+unit's zone when it is selected or moves.
+
+`obstacles.remove_obstacles` deletes obstacles cleanly: own and merged node entries (no
+surviving obstacle lacked its own single-id entry), empty nodes and their cell pairs, the
+boundary entries nobody lists (indices compacted in nodes and obstacle slots), the items and
+ids, and manager lists no node references. `scripts/clear_zones.py` removes every character
+obstacle whose cells touch the regions to be split: on canaries_base5 with France and Spain,
+23 of 121 on grid 2 (4,966 entries, 1,659 nodes, 165 manager lists), `verify_obstacles` 0.
+
+The split then found 0 blocked cells (1 in Normandy: Fort Maubeuge's fort zone, still there),
+so every border strip is carved and the contact passes relabel nothing. The invariant check
+now fails only on T-junctions a carve adds: vanilla r105 c95 (by the Seine) already has some.
+`out/batch1z_s3_unlocked`: Lyon a real settlement diamond at (35.97, 323.47), Lyon's town
+slot at Valence (36.40, 318.30) as approved, Aix (39.37, 309.76), Rouen (6.94, 351.01);
+contacts 10 / 26 and foreign strips 20 (vanilla 19), field misses 229, obstacles 0 on all
+grids, trade routes and AI positions 0 stale. Untested; the open question is whether the game
+loads units whose saved zone is missing.
+
+**Load crash, and the store free list.** The first `batch1z` crashed on campaign load at
+Empire.exe+0x75a4ab (read of 0xc, dump 672) under the grid loader +0x6b3197.
+`PATHFINDING_GRID[7]` is the store's **free list: exactly the store polygons no entry
+references** (all 7 vanilla grids; grid 2: 192 of 8,814). Removing the zones orphaned 1,771
+polygons that were neither used nor free. `remove_obstacles` now appends them to [7], and
+`verify_obstacles` checks the rule (it flags the crashed build). Rebuilt `batch1z`: obstacles
+0 on all grids, every other check as above.
+
+**Border lines** (user: vanilla draws them between friendly regions too, and the new borders
+have none). Ruled out: the lookup TGA (repainted), regions.esf ring connectivity (names the
+new neighbours), area fields [5]/[9] (shared by Spain, France, Savoy, Alsace, Flanders),
+CAI_REGION_BOUNDARY (no geometry), startpos per-path-id flags (False on vanilla borders too).
+Untested candidate: the pathfinding border strips, first complete in `batch1z`.
+
+**Second load crash: combinations.** With the free list fixed, load still crashed at
++0x75a4ab (dump 10080). The loader (+0x75a0e0, as in 8.14) builds one object per grid node
+(8,203 = the node count) and, for each, looks up the entry of the obstacle combination
+active in that cell; item 6,984 was cell (112, 89), where four zones overlapped and two
+survived. A node stores pre-merged geometry per combination of its obstacles (lists of
+(id, state) pairs, states 0 / 1 / 3; MOB0's second field k runs 0..n_ids, apparently a
+reference count), and vanilla never stored that pair on its own. So zones are removed in
+whole groups: every character zone sharing a cell with a removed one, repeated (forts stay;
+their own entries exist). France + Spain: 23 seed zones -> 54 removed (11,206 entries, 3,741
+nodes, 4,176 store polygons freed); no node that had an entry for its full obstacle set lost
+it (vanilla grid 2 lacks one in 297 nodes; 157 after). Rebuilt `batch1z`: same results.
+
+### 10.12 `batch1z` plays; repeated vertex ids crash unit moves (2026-10-06)
+
+With the zones removed in groups, `batch1z` loads, end turns run and troops move between
+regions. Four crashes followed in the triangulation pipeline (+0x6ab1d0 -> +0x757c20 ->
++0x73bb60 / +0x7587f0; sites +0x75705c and +0x758d8c): troops into Rouen, a priest into
+Mont-Saint-Michel, troops Paris -> Orleans, a rake into Clermont-Ferrand. Each polygon held
+the **same vertex id twice in a row** (e.g. (-9.1046, 343.75) in r101 c85; a slot outline in
+r103 c97 near Paris). Vanilla never repeats an id: its 54 zero-length edges are all two ids
+at one point. The split's strip carve added 50: `commit_plan.encode_keep` (an original record
+re-noded) snapped a new point onto a neighbouring own vertex and kept both. It now collapses
+repeats, and `check_nodes` fails on any repeated id. Rebuilt `batch1z`: zero-length edges 54,
+all distinct ids, as vanilla.
