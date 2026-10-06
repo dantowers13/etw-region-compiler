@@ -439,6 +439,205 @@ def split_regions_esf(root, spec) -> dict:
 PF_GRID = 2
 PF_MARKERS = 1022
 STRIP_HALF = 0.5           # vanilla border strips: ~1.0 wide, centred on the regions.esf border
+LAND_TYPES = (0, 6, 7, 8, 9, 11)   # record / obstacle-part types that carry a land region id
+TOUCH = 1e-4               # two polygons touch when their boundaries share this much length
+
+
+def _touching(polys_a, polys_b, a_pid, b_pid):
+    """(i, j) for each polygon of pid a_pid in polys_a whose boundary shares a stretch with
+    one of pid b_pid in polys_b; items are (pid, type, polygon)."""
+    out = []
+    for i, (pa, ta, A) in enumerate(polys_a):
+        if pa != a_pid or ta not in LAND_TYPES:
+            continue
+        for j, (pb, tb, B) in enumerate(polys_b):
+            if pb == b_pid and tb in LAND_TYPES and A.boundary.intersection(B.boundary).length > TOUCH:
+                out.append((i, j))
+    return out
+
+
+def separate_records(g, view, cells, fpid, cpid, new_bid) -> dict:
+    """Vanilla never lets two regions' land touch (10 contacts on the whole map): a land
+    border is a strip of border-id records. Cells under obstacles cannot be cut, so the
+    strip has gaps there, and the batch 1 build hung the game (the pathfinder's funnel
+    looped at a Lyonnais / Burgundy contact, deep_dive 10.8). Close each remaining contact
+    by giving one of the two records the border id: the parent's if it can, else the
+    smaller, never a slot outline (type 7); geometry is unchanged. Run cells are never relabelled (that would
+    re-split the run); a contact with only run cells / outlines is reported."""
+    from shapely.affinity import translate
+    from shapely.geometry import box
+    from etwpc.io.esf_types import BoundaryEntry
+    done, left = 0, set()
+    while True:
+        view.cache.clear()
+        recs = {}
+        for rc in cells:
+            v = view.get(*rc)
+            ox, oy = view.origin(*rc)
+            recs[rc] = ([(v[1], 0, box(ox, oy, ox + g.cs, oy + g.cs))] if isinstance(v, tuple) else
+                        [(q.be.path_id, q.t, translate(q.poly, ox, oy)) for q in v])
+        victims = set()
+        for rc, lst in recs.items():
+            for nb in (rc, (rc[0], rc[1] + 1), (rc[0] + 1, rc[1])):
+                if nb not in recs:
+                    continue
+                for a_pid, b_pid in ((fpid, cpid), (cpid, fpid)):
+                    for i, j in _touching(lst, recs[nb], a_pid, b_pid):
+                        cand = [(x, k) for x, k in ((rc, i), (nb, j))
+                                if not isinstance(view.get(*x), tuple) and recs[x][k][1] != 7]
+                        if not cand:
+                            left.add(rc)
+                            continue
+                        # the parent's record first: S3 places the child's new slots on the
+                        # child's land (a Lyonnais piece made border blocked Montbrison)
+                        x, k = min(cand, key=lambda xk: (recs[xk[0]][xk[1]][0] != fpid, recs[xk[0]][xk[1]][2].area))
+                        victims.add((x, k))
+        if not victims:
+            break
+        for (r, c), k in victims:
+            it = g.items[g.cell_item[r * g.cols + c][0]]
+            bounds = list(it.bounds)
+            be = BoundaryEntry.from_packed(*bounds[k])
+            be.path_id = new_bid
+            bounds[k] = be.to_packed()
+            it.bounds = bounds
+        done += len(victims)
+    view.cache.clear()
+    return {"relabelled": done, "unresolved_cells": sorted(left)}
+
+
+def regroup_strips(g, view, cells, fpid, cpid, split_ids) -> int:
+    """A strip of one of the parent's border groups that now touches only the child's land
+    (none of the parent's) takes the child's copy of that group (split_ids: parent group id ->
+    child group id). The side-of-line rule misses strip records that lie along the new
+    border: Lyonnais land sat against France/Occitania strips south of Montbrison (vanilla
+    has 19 land / foreign-strip contacts on grid 2, batch 1 had 28; deep_dive 10.9)."""
+    from shapely.affinity import translate
+    from shapely.geometry import box
+    from etwpc.io.esf_types import BoundaryEntry
+    if not split_ids:
+        return 0
+    def recs(rc):
+        v = view.get(*rc)
+        ox, oy = view.origin(*rc)
+        return ([(v[1], 0, box(ox, oy, ox + g.cs, oy + g.cs))] if isinstance(v, tuple) else
+                [(q.be.path_id, q.t, translate(q.poly, ox, oy)) for q in v])
+    view.cache.clear()
+    done = 0
+    for r, c in cells:
+        v = view.get(r, c)
+        if isinstance(v, tuple) or not any(q.be.path_id in split_ids for q in v):
+            continue
+        near = [x for d in ((0, 0), (0, 1), (1, 0), (0, -1), (-1, 0))
+                if 0 <= r + d[0] < g.rows and 0 <= c + d[1] < g.cols for x in recs((r + d[0], c + d[1]))]
+        mine = recs((r, c))
+        it = g.items[g.cell_item[r * g.cols + c][0]]
+        bounds = list(it.bounds)
+        for k, (pid, t, P) in enumerate(mine):
+            if pid not in split_ids or t not in LAND_TYPES:
+                continue
+            touch = {q for q, tq, Q in near if q in (fpid, cpid) and tq in LAND_TYPES and Q is not P
+                     and P.boundary.intersection(Q.boundary).length > TOUCH}
+            if touch == {cpid}:
+                be = BoundaryEntry.from_packed(*bounds[k])
+                be.path_id = split_ids[pid]
+                bounds[k] = be.to_packed()
+                done += 1
+        it.bounds = bounds
+    view.cache.clear()
+    return done
+
+
+def regroup_parts(g, view, osys, store, reshaped, fpid, cpid, split_ids) -> int:
+    """regroup_strips for the obstacle parts of reshaped cells (their own entry's parts and
+    the neighbouring cells' records)."""
+    from shapely.affinity import translate
+    from shapely.geometry import box
+    from etwpc.io.esf_types import BoundaryEntry
+    from etwpc.compiler.obstacles import part_polygon
+    if not split_ids:
+        return 0
+    def recs(rc):
+        v = view.get(*rc)
+        ox, oy = view.origin(*rc)
+        return ([(v[1], 0, box(ox, oy, ox + g.cs, oy + g.cs))] if isinstance(v, tuple) else
+                [(q.be.path_id, q.t, translate(q.poly, ox, oy)) for q in v])
+    done = 0
+    for e in osys.entries:
+        if e.cell not in reshaped:
+            continue
+        r, c = e.cell
+        bes = [BoundaryEntry.from_packed(e.pairs[i], e.pairs[i + 1]) for i in range(0, len(e.pairs), 2)]
+        if not any(be.path_id in split_ids for be in bes):
+            continue
+        polys = [part_polygon(g, store, be, e.cell) for be in bes]
+        nbs = [x for d in ((0, 1), (1, 0), (0, -1), (-1, 0))
+               if 0 <= r + d[0] < g.rows and 0 <= c + d[1] < g.cols for x in recs((r + d[0], c + d[1]))]
+        own = [(be.path_id, be.path_type, p) for be, p in zip(bes, polys) if p is not None]
+        changed = False
+        for k, (be, P) in enumerate(zip(bes, polys)):
+            if P is None or be.path_id not in split_ids or be.path_type not in LAND_TYPES:
+                continue
+            touch = {q for q, tq, Q in own + nbs if q in (fpid, cpid) and tq in LAND_TYPES and Q is not P
+                     and P.boundary.intersection(Q.boundary).length > TOUCH}
+            if touch == {cpid}:
+                be.path_id = split_ids[be.path_id]
+                done += 1
+                changed = True
+        if changed:
+            e.pairs = [x for be in bes for x in be.to_packed()]
+    return done
+
+
+def separate_parts(g, view, osys, store, reshaped, fpid, cpid, new_bid) -> dict:
+    """The same rule for the obstacle parts that replace a reshaped cell at runtime: a part
+    touching the other region inside its own entry or in a 4-neighbour cell's records gets
+    the border id (inside an entry, the smaller of the two)."""
+    from shapely.affinity import translate
+    from shapely.geometry import box
+    from etwpc.io.esf_types import BoundaryEntry
+    from etwpc.compiler.obstacles import part_polygon
+
+    def nb_records(rc):
+        v = view.get(*rc)
+        ox, oy = view.origin(*rc)
+        return ([(v[1], 0, box(ox, oy, ox + g.cs, oy + g.cs))] if isinstance(v, tuple) else
+                [(q.be.path_id, q.t, translate(q.poly, ox, oy)) for q in v])
+
+    done, left, undecoded = 0, 0, 0
+    for e in osys.entries:
+        if e.cell not in reshaped:
+            continue                     # copy entries are re-copied from their cell
+        r, c = e.cell
+        bes = [BoundaryEntry.from_packed(e.pairs[i], e.pairs[i + 1]) for i in range(0, len(e.pairs), 2)]
+        polys = [part_polygon(g, store, be, e.cell) for be in bes]
+        undecoded += sum(p is None for p in polys)
+        nbs = [x for d in ((0, 1), (1, 0), (0, -1), (-1, 0))
+               if 0 <= r + d[0] < g.rows and 0 <= c + d[1] < g.cols for x in nb_records((r + d[0], c + d[1]))]
+        changed = False
+        while True:
+            parts = [(be.path_id, be.path_type, p) for be, p in zip(bes, polys) if p is not None]
+            idx = [i for i, p in enumerate(polys) if p is not None]
+            victims = set()
+            for a_pid, b_pid in ((fpid, cpid), (cpid, fpid)):
+                victims |= {idx[i] for i, _ in _touching(parts, nbs, a_pid, b_pid) if parts[i][1] != 7}
+                for i, j in _touching(parts, parts, a_pid, b_pid):
+                    cand = [k for k in (i, j) if parts[k][1] != 7]
+                    if cand:
+                        victims.add(idx[min(cand, key=lambda k: parts[k][2].area)])
+            if not victims:
+                break
+            for k in victims:
+                bes[k].path_id = new_bid
+            done += len(victims)
+            changed = True
+        left += bool(_touching([(be.path_id, be.path_type, p) for be, p in zip(bes, polys) if p is not None],
+                               nbs, fpid, cpid) or
+                     _touching([(be.path_id, be.path_type, p) for be, p in zip(bes, polys) if p is not None],
+                               nbs, cpid, fpid))
+        if changed:
+            e.pairs = [x for be in bes for x in be.to_packed()]
+    return {"relabelled": done, "entries_still_touching": left, "undecoded": undecoded}
 
 
 def split_pathfinding(pf_root, sp, spec, info) -> None:
@@ -455,7 +654,7 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
     applied to the copies. startpos node sequence ids are renumbered afterwards."""
     from etwpc.compiler.coastal import CellView, commit_plan, self_test, check_cells, check_nodes, CELL, ring_of
     from etwpc.compiler.footprint import AreaGrid, CellSpec
-    from etwpc.compiler.obstacles import ObstacleSystem
+    from etwpc.compiler.obstacles import ObstacleSystem, part_polygon, store_polygons
     from etwpc.io.esf_types import BoundaryEntry
     from shapely.affinity import translate
     from shapely.geometry.polygon import orient
@@ -576,7 +775,8 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
 
     def plan_cells(blocked):
         plan, run_specs = {}, {}
-        stats = {"run_relabel": 0, "run_carved": 0, "rec_relabel": 0, "rec_carved": 0, "blocked_cells": 0}
+        stats = {"run_relabel": 0, "run_carved": 0, "rec_relabel": 0, "rec_carved": 0, "blocked_cells": 0,
+                 "blocked_run_on_strip": 0}
         for r in range(max(0, r0), min(g.rows, r1 + 1)):
             for c in range(max(0, c0), min(g.cols, c1 + 1)):
                 ox, oy = view.origin(r, c)
@@ -589,6 +789,7 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
                     if recs[1] != fpid:
                         continue
                     if not cuts:
+                        stats["blocked_run_on_strip"] += hits
                         if child_half.contains(sq.centroid):
                             spc = g.spec(r, c)
                             run_specs[r * g.cols + c] = CellSpec(spc.hdr, [], spc.word, cpid)
@@ -676,6 +877,10 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
     view.cache.clear()
     bad = check_cells(view, around) + check_nodes(view, [rc for rc, out in plan.items() if any(o is None for *_, o in out)])
     assert not bad, f"carved cells break a vanilla invariant: {bad[:3]}"
+    sep = separate_records(g, view, [(r, c) for r in range(max(0, r0), min(g.rows, r1 + 1))
+                                     for c in range(max(0, c0), min(g.cols, c1 + 1))], fpid, cpid, new_bid)
+    regrouped = regroup_strips(g, view, [(r, c) for r in range(max(0, r0), min(g.rows, r1 + 1))
+                                         for c in range(max(0, c0), min(g.cols, c1 + 1))], fpid, cpid, split_ids)
 
     # 4. tables: i2 / order / counts / groups
     ch = g.gd.children
@@ -704,7 +909,8 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
     # an obstacle copy follows the cell record it copies (same vertex list); a copy the
     # obstacle reshaped follows the cell when the cell's parent-side land all went one way
     view = CellView(g)
-    relab = 0
+    store = store_polygons(item)
+    relab = unresolved = 0
     for e in osys.entries:
         r, c = e.cell
         ox, oy = g.ox + c * g.cs, g.oy + r * g.cs
@@ -731,24 +937,23 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
                 continue
             if be.path_id != fpid:
                 continue
+            poly = part_polygon(g, store, be, (r, c))
             if be.vertex_index in by_vi:
-                to_child = by_vi[be.vertex_index] == cpid
+                newp = by_vi[be.vertex_index] if by_vi[be.vertex_index] in (cpid, new_bid) else fpid
             elif fpid not in land_pids or cpid not in land_pids:
-                to_child = fpid not in land_pids and cpid in land_pids
+                newp = cpid if fpid not in land_pids and cpid in land_pids else fpid
+            elif poly is not None:
+                newp = cpid if child_half.contains(poly.representative_point()) else fpid
             else:
-                vi = be.vertex_index
-                pt = (ox + 1, oy + 1)
-                if vi < len(g.vlist) and g.vlist[vi] > 0:
-                    ents = g.vlist[vi + 1: vi + 1 + g.vlist[vi]]
-                    pts = [(g.vx[x], g.vy[x]) for x in ents if 3 < x < len(g.vx)]
-                    if pts:
-                        pt = (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
-                to_child = child_half.contains(Point(pt))
-            if to_child:
-                be.path_id = cpid
+                unresolved += 1
+                newp = cpid if child_half.contains(Point(ox + 1, oy + 1)) else fpid
+            if newp != fpid:
+                be.path_id = newp
                 pairs[i], pairs[i + 1] = be.to_packed()
                 relab += 1
         e.pairs = pairs
+    sep_parts = separate_parts(g, view, osys, store, reshaped, fpid, cpid, new_bid)
+    regrouped_parts = regroup_parts(g, view, osys, store, reshaped, fpid, cpid, split_ids)
     # refresh the copies of every cell that changed (cut, relabelled or new fields)
     refreshed = 0
     for rc, eis in copy_entries.items():
@@ -780,7 +985,10 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
           f"id {new_bid} [{spec['parent']}/{spec['child']}]; groups moved to the child {[groups[gi] for gi in regroup]}, "
           f"split {[groups[ng] for ng in split_to.values()]}; "
           f"{stats}; {res['rewritten_cells']} cells rewritten, {res['vertices_added']} vertices added; startpos flags "
-          f"{len(fl)}, obstacle copies relabelled {relab}, refreshed {refreshed}, node sequence ids renumbered {nren}")
+          f"{len(fl)}, obstacle copies relabelled {relab} ({unresolved} undecoded), refreshed {refreshed}, node "
+          f"sequence ids renumbered {nren}; direct {spec['parent']}/{spec['child']} contacts closed with the "
+          f"border id: records {sep}, obstacle parts {sep_parts}; strips moved to the child's group: records "
+          f"{regrouped}, obstacle parts {regrouped_parts}")
 
 
 # ─── startpos ─────────────────────────────────────────────────────────────────
