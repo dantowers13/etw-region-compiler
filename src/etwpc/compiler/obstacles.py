@@ -441,6 +441,15 @@ def verify_obstacles(sys_: ObstacleSystem, seq: list[int], cols: int) -> list[st
                 if ei < len(sys_.entries) and not any(bid in l[0::2] for l in lists_at.get(ei, ())):
                     errs.append(f"obstacle {it[1].value} slot entry {ei} is not listed under its id by the cell's node")
                     break
+    # PATHFINDING_GRID[7] = the store polygons no entry references (all 7 vanilla grids)
+    from etwpc.io.esf_types import BoundaryEntry as _BE
+    used_store = {_BE.from_packed(e.pairs[i], e.pairs[i + 1]).vertex_index - (1 << 21)
+                  for e in sys_.entries for i in range(0, len(e.pairs), 2)
+                  if _BE.from_packed(e.pairs[i], e.pairs[i + 1]).vertex_index >= 1 << 21}
+    free = list(sys_.grid[7].value)
+    if set(free) != set(range(sys_.grid[0].value)) - used_store or len(free) != len(set(free)):
+        errs.append(f"store free list [7] ({len(free)}) != unreferenced store polygons "
+                    f"({sys_.grid[0].value - len(used_store)})")
     n_entries = len(sys_.entries)
     ids = set(sys_.fort_ids_prim.value)
     if len(ids) != len(sys_.forts.children):
@@ -562,3 +571,95 @@ def part_polygon(g, store, be, cell):
         return None
     poly = Polygon(pts)
     return poly if poly.is_valid and poly.area > 0 else poly.buffer(0) if poly.area > 0 else None
+
+
+def remove_obstacles(osys: ObstacleSystem, char_ids=(), fort_ids=()) -> dict:
+    """Delete character / fort obstacles and every trace of them in the grid: their own and
+    merged node entries (a list naming one of them is the merged geometry of overlapping
+    obstacles; each survivor keeps its own single-id entry, as ObstacleCloner relies on),
+    nodes left empty with their cell pairs, the boundary entries nobody references any more
+    (indices compacted in nodes and in the surviving obstacles' slots), the obstacle items
+    and ids, and manager lists no node references (the manager is exactly the nodes' lists,
+    deep_dive 8.11). A character obstacle is the game's saved zone for that unit; the game
+    recomputes zones when a unit is selected or moves (deep_dive 10.11). Call flush() after.
+    Fort obstacles are tied 1:1 to fort objects and AI records (8.6): remove those too."""
+    from collections import Counter
+    gone = {c + 2 for c in char_ids} | {f + 1 for f in fort_ids}
+    st = Counter()
+    keep_nodes, node_map = [], {}
+    for ni, node in enumerate(osys.nodes.children):
+        m0, m1 = _mobs(node)
+        new0 = []
+        for e in m0.children:
+            ids = list(e[3].value)[0::2]
+            if not any(i in gone for i in ids):
+                new0.append(e)
+            elif all(i in gone for i in ids):
+                st["own_entries_dropped"] += 1
+            else:
+                st["merged_entries_dropped"] += 1
+                left = [i for i in ids if i not in gone]
+                for i in left:
+                    if not any(list(x[3].value) == [i, list(e[3].value)[1 + 2 * ids.index(i)]] for x in m0.children):
+                        st["survivor_without_own_entry"] += 1
+        if not new0:
+            st["nodes_removed"] += 1
+            continue
+        m0.children = new0
+        lists = {tuple(x[3].value) for x in new0}
+        seen, n1 = set(), []
+        for x in m1.children:
+            t = tuple(x[1].value)
+            if t in lists and t not in seen:
+                n1.append(x)
+                seen.add(t)
+        m1.children = n1
+        node_map[ni] = len(keep_nodes)
+        keep_nodes.append(node)
+    osys.nodes.children = keep_nodes
+    osys.pairs = [(p, node_map[i]) for p, i in osys.pairs if i in node_map]
+    # obstacle items
+    lists = osys.lists
+    for ids_i, items_i, drop in ((2, 3, set(char_ids)), (4, 5, set(fort_ids))):
+        ids = list(lists.children[ids_i].value)
+        items = lists.children[items_i].children
+        keep = [(i, it) for i, it in zip(ids, items) if i not in drop]
+        st["obstacles_removed"] += len(ids) - len(keep)
+        _set_list(lists.children[ids_i], [i for i, _ in keep])
+        lists.children[items_i].children = [it for _, it in keep]
+    # boundary entries: keep those a node still lists; compact indices everywhere
+    used = sorted({x[0].value for node in keep_nodes for x in _mobs(node)[0].children})
+    emap = {old: new for new, old in enumerate(used)}
+    st["entries_removed"] = len(osys.entries) - len(used)
+    osys.entries = [osys.entries[i] for i in used]
+    for node in keep_nodes:
+        for x in _mobs(node)[0].children:
+            _set_int(x[0], emap[x[0].value])
+    for items_i in (3, 5):
+        for it in lists.children[items_i].children:
+            for slot in _find(it, "OBSTACLE").children[0].children:
+                refs = list(slot[0].value)
+                out = [emap[r & ~RING_FLAG] | (r & RING_FLAG) for r in refs if (r & ~RING_FLAG) in emap]
+                st["slot_refs_dropped"] += len(refs) - len(out)
+                _set_list(slot[0], out)
+    # PATHFINDING_GRID[7] is the store's free list: exactly the store polygons no entry
+    # references (all 7 vanilla grids). Polygons only removed entries used must go on it, or
+    # campaign load walks an orphan (Empire.exe+0x75a4ab via the grid loader +0x6b3197).
+    from etwpc.io.esf_types import BoundaryEntry as _BE
+    used_store = {_BE.from_packed(e.pairs[i], e.pairs[i + 1]).vertex_index - STORE_FLAG
+                  for e in osys.entries for i in range(0, len(e.pairs), 2)
+                  if _BE.from_packed(e.pairs[i], e.pairs[i + 1]).vertex_index >= STORE_FLAG}
+    free_prim = osys.grid[7]
+    free = list(free_prim.value)
+    newly = sorted(set(range(osys.grid[0].value)) - used_store - set(free))
+    _set_list(free_prim, free + newly)
+    st["store_polygons_freed"] = len(newly)
+    # manager = exactly the lists the nodes reference
+    want = set(osys.node_lists())
+    before = len(osys.manager.children)
+    osys.manager.children = [it for it in osys.manager.children
+                             if any(isinstance(c, ESFPrimitive) and isinstance(c.value, (list, tuple))
+                                    and tuple(c.value) in want for c in it)]
+    st["manager_removed"] = before - len(osys.manager.children)
+    st["manager_added"] = osys.sync_manager()
+    return dict(st)
