@@ -1682,3 +1682,108 @@ regions.esf rules exact, field-rule misses 229 (vanilla 232), obstacle ids 63,08
 `verify_obstacles` clean on all grids, startpos errors identical to the tested Occitania
 build. Known gap: Provence has no border strip with the Lyonnais or Occitania (the border
 runs through reshaped cells), so 12 records of two regions touch directly there.
+
+### 10.7 `batch1_s3_unlocked` crash: stored trade routes name the old region (2026-10-06)
+
+The new France campaign crashed just after the loading bar finished, at Empire.exe+0x51470
+(dump 17080). That is the shared integer hash, so the 8.14 label did not apply. The stack
+is not the grid loader: +0x5e0b20 walks a route's 24-byte connection records (region,
+v2, start node, end node, over-sea flag, the in-memory form of an `INTERNATIONAL_TRADE_ROUTE`)
+and, for each consecutive pair, +0x638430 looks the node up among the region's ports and
+settlements, then hashes the result. The faulting record was Louisiana's route:
+lower_louisiana / start 8 (Mobile) / end 120 (Le Havre) / partner region France.
+
+Rule (vanilla 74 of 74 routes, including Mughal's from Mesopotamia): **a route's region id
+[1] is the region holding start node [3], and [6] the region holding end node [4]**, not the
+faction capital. S3 moves a parent's port slot into the child under its old key
+(`port:france:le_havre` is Normandy's REGION_SLOT, and PORT_INDICES keeps that key), so
+France's, Louisiana's and Sweden's four routes through node 120 still named France and the
+lookup returned null. Occitania escaped because Bordeaux is not a trade port (not in
+PORT_INDICES); Brest and Marseille are, but no stored route uses them.
+
+Fix: `patch_trade_routes` (run after `patch_trade_network`) recomputes each endpoint's
+region from where its slot or settlement now is and re-points stale ids; it asserts none
+remain. Vanilla 0 stale, `occitania_s3_unlocked` 0, `batch1_s3_unlocked` 4 (all node 120 ->
+Normandy). `out/batch1_s3_trade` = batch1_s3_unlocked with the pass applied to startpos
+(16 bytes differ, round-trip OK; other files identical). `crash_triage.py` now tells
++0x51470 callers apart by the first return address.
+
+### 10.8 Selecting an army near Lyon: an endless funnel, and direct region contacts (2026-10-06)
+
+`batch1_s3_trade` loads and mostly plays, but selecting the French army in the Lyonnais
+froze the game while disk use climbed, then it crashed (dump 8828, 2.95 GB): Empire.exe
++0x758ff6, a write through null while copying a growing array. +0x7587f0 (called from
++0x757f50, the pathfinder) is the path straightening step (a funnel over a triangulated
+mesh: half-edges, 24-byte entries, `next` three times returns to the start; orientation test
++0x6f8970). It pushed 2^27 entries alternating between two vertices, (33.114, 326.000) and
+(33.015, 325.886), then the next doubling (1 GB) failed. Both are vanilla vertices; what is
+not vanilla is that Burgundy land (pid 91) touched Lyonnais land (pid 90) right there.
+
+**Rule:** two regions' land records (types 0/6/7, obstacle parts also 8/9/11) almost never
+share an edge: vanilla has 10 such contacts on grid 2 (26 among obstacle parts); a land
+border is a strip of border-id records. `split_pathfinding` cannot cut cells under an
+obstacle, and there it relabelled records wholly by side, so the strip had gaps: Occitania
+added 9 contacts (47 among obstacle parts, harmless so far), batch 1 brought it to 56 / 239.
+
+**Startpos store.** A reshaped obstacle part whose vertex_index has bit 21 set
+(`STORE_FLAG`) uses polygon `vi - 2^21` of PATHFINDING_GRID[1], laid out
+`[n, (x, y) * n, trailer]` in absolute map coordinates (signed 1/2^20 units);
+PATHFINDING_GRID[0] is the polygon count (8,814 on grid 2). 11,992 of 11,992 parts lie inside
+their own cell (`obstacles.store_polygons`, `part_polygon`).
+
+**Fix** (`separate_records`, `separate_parts`, end of each split's S2): every remaining
+parent/child contact is closed by giving one record the border id, the parent's when it
+can (a Lyonnais piece made border left no site for Montbrison), else the smaller, never a
+slot outline or a run cell; obstacle parts in reshaped cells get the same rule against their
+own entry and the neighbouring records. Geometry is untouched; field rules depend on the
+record class, not the id (misses 229, as before). Vanilla puts border ids on types 0/6/7 in
+pathfinding and 0/6/7/8/9/11 in obstacle parts, so the relabels are within vanilla's range.
+Obstacle-part side decisions now use the part's own polygon instead of the cell centre.
+
+`out/batch1b_s3_unlocked` (split from canaries_base5, S3 `--footprints --obstacles none`,
+unlock): contacts 10 / 26 = vanilla exactly, field-rule misses 229, `verify_obstacles` 0 on
+all grids, 0 stale trade routes, every footprint site as in `batch1_s3_unlocked`.
+
+### 10.9 `batch1b` still hangs: an open movement-range outline, and foreign strips (2026-10-06)
+
+`batch1b_s3_unlocked` (contacts = vanilla) hung the same way (dump 10284, same two vertices).
+Correction to 10.8: +0x7587f0 triangulates a polygon (sweep line; +0x757f50 builds its edges,
++0x73bb60 its vertex table at image +0x1073e58, size at +0x1073e54), and the input was a
+**two-point "polygon"**. Its caller (+0x6fe1c0) walks a list of 43 outline polygons (20-byte
+headers) of what looks like the army's movement range: most edges cut through land and the
+rest follow impassable (t2/t3) boundaries. From index 13 on the list holds loose two-point
+segments that chain into one open line: y = 322 from x 28 to 33.40, up the impassable edge in
+r91 c106 to (33.464, 324.000), a gap, then the impassable edge in r92 c106 to (33.114, 326.000).
+The gap sits beside a vanilla zero-area impassable sliver (33.464-33.475, 324.000-324.003).
+The image base moves between runs (0x700000, 0x7c0000, 0x850000): read globals relative to it.
+
+**Second rule:** land of region R rarely touches a border strip whose group lacks R (vanilla
+19 on grid 2, Occitania 19, batch 1 28). New ones: Lyonnais land against France/Occitania
+strips at r89-r91 c103-c105, along the open line. The side-of-line rule left those strips with
+the parent's group. `regroup_strips` / `regroup_parts`: a strip of a split group touching only
+the child's land (no parent land) takes the child's copy of the group.
+
+Builds: `batch1c_s3_unlocked` (both rules: region contacts 10 / 26, foreign strips 21, field
+misses 229, obstacles 0, trade routes 0 stale) and the bisect `batch1_nolyon_s3_unlocked`
+(occitania, brittany, normandy, provence, andorra: no Lyonnais or Burgundy, so the Lyon army
+stands in France). Whether the foreign strips are the cause is unproven.
+
+### 10.10 Bisect: the hang is Lyonnais-specific; stale AI positions; Fort Maubeuge (2026-10-06)
+
+`batch1c` hung identically (dump 9676: the same 43 outline polygons, point for point, so
+none of the 10.8 / 10.9 relabels touch it). `batch1_nolyon` (no Lyonnais / Burgundy): the Lyon
+army selects fine. Garrisoning Fort Maubeuge (France, (19.60, 353.88)) in that build hung the
+same routine (dump 20776): its outline merges radius-1 zones around nearby units (an arc
+centred exactly on a LOCOMOTABLE at (10.28, 339.8)) and broke into loose segments with
+zero-length pieces near the France/Normandy border. The user reports the fort misbehaving in
+the restored (unmodded) campaign too (an occupied fort cannot be entered; path length shrinks
+per click) and wants it removed: a separate step (fort / obstacle / CAI / garrison links,
+8.6-8.9).
+
+* **No clean settlement-diamond site** exists within 12 units of Lyon: nearly the whole
+  Lyonnais lies under the two French armies' reshaped cells. Lyon keeps its town outline.
+* **Stale AI positions:** `CAI_SITUATED` = (x, y, region AI id, theatre ids) for armies, agents
+  and slots. S3 re-pointed moved slots only; the Lyon army (35.29, 320.02) and two units in
+  Burgundy still named France. `resituate` re-points every CAI_SITUATED inside a split region
+  that names its parent. `CHARACTER` records hold no region id. Build `batch1e` = batch1c +
+  this (pathfinding / regions byte-identical to batch1c).
