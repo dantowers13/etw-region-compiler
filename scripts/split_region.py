@@ -869,14 +869,20 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
     around = sorted(set(plan) | ring_of(plan))
     bad = self_test(view, [rc for rc in around if (rc[0], rc[1]) not in plan])
     assert not bad, f"field rules do not reproduce cells beside the border: {bad[:3]}"
+    # The invariant check fails only on problems the carve adds: vanilla itself has
+    # T-junctions (r105 c95 by the Seine, once under a saved unit zone).
+    import re
+    norm = lambda msgs: {re.sub(r" rec \d+", "", m) for m in msgs}
+    carved = [rc for rc, out in plan.items() if any(o is None for *_, o in out)]
+    before_inv = norm(check_cells(view, around) + check_nodes(view, carved))
     if run_specs:
         g._apply(run_specs)
         view.cache.clear()
         # the plan's original Rec objects came from the old cache: re-read nothing, they stay valid
     res = commit_plan(view, plan, extra)
     view.cache.clear()
-    bad = check_cells(view, around) + check_nodes(view, [rc for rc, out in plan.items() if any(o is None for *_, o in out)])
-    assert not bad, f"carved cells break a vanilla invariant: {bad[:3]}"
+    bad = norm(check_cells(view, around) + check_nodes(view, carved)) - before_inv
+    assert not bad, f"carved cells break a vanilla invariant: {sorted(bad)[:3]}"
     sep = separate_records(g, view, [(r, c) for r in range(max(0, r0), min(g.rows, r1 + 1))
                                      for c in range(max(0, c0), min(g.cols, c1 + 1))], fpid, cpid, new_bid)
     regrouped = regroup_strips(g, view, [(r, c) for r in range(max(0, r0), min(g.rows, r1 + 1))
