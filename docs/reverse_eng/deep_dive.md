@@ -2020,3 +2020,45 @@ map is warped: a global fit misses Aleppo by 12 units).
 Build: `zoneless2_base` (zones cleared over France, Spain and the six Ottoman parents) ->
 France splits -> Crete -> Cyprus -> `split_region.py --split batch2` (all 12 pass) -> S3 -> unlock
 -> `batch2_s3_unlocked`.
+
+### 10.17 `batch2_s3_unlocked` crash: the Bosphorus crossing stayed with Anatolia (2026-10-08)
+
+`batch2_s3_unlocked` crashed on campaign load at Empire.exe+0x596e02 (dump 6100), the 8.17
+site: a transport-graph link lookup returned null. The requested pair sits at
+`[esp+0x58]/[esp+0x5c]`: nodes **241 rumelia, 309 hudavendigar**, which have no TRADE_ROUTE.
+
+Vanilla joins regions across a strait with a CAI_REGION_BOUNDARY of length 1.0 and `[3] = 1`
+(nine of them: rumelia-anatolia, sweden-denmark, ingria-finland, scotland-ireland,
+morocco-gibraltar, labrador-newfoundland and three in North America). Such a pair shares no
+outline, so `split_startpos`, which hands the parent's boundaries to the child by shared outline
+length, left rumelia-anatolia on Anatolia although Hudavendigar now holds the Asian shore. The
+engine works out the crossing for itself (it asked for rumelia -> hudavendigar), and
+`patch_trade_network` makes links only from CAI boundaries, so the leg had no link.
+
+Fix: `split_startpos` hands a strait boundary to the child when the child's land is nearer the
+other region than the parent's remaining land (`strait crossings handed over` in the log);
+`patch_trade_network` then links rumelia-hudavendigar. France and Spain have no strait
+boundaries, so batch 1 output is unchanged. Rebuild: `batch2b_split` -> `batch2b_s3` ->
+`batch2b_s3_unlocked`.
+
+### 10.18 `batch2b_s3_unlocked` crash: every trade-route hop, not only the first (2026-10-08)
+
+`batch2b_s3_unlocked` got past 10.17 and crashed after the loading bar at Empire.exe+0x51470
+via +0x5e0bfb (dump 18040), the 10.7 site. The in-memory route at esi (24-byte records) was the
+Ottoman-Mughal route; the faulting hop departs node 100 (`port:mesopotamia:basra`, now the
+Basra region's) under Mesopotamia.
+
+A stored INTERNATIONAL_TRADE_ROUTE is `[n, n x (region, v2, depart node, next node, by sea),
+...]`, the last hop `(region, -1, -1, False)`. **Each hop's region holds both the node the route
+arrives at (the previous hop's next) and the node it departs from** (vanilla: 0 exceptions in 72
+routes; a region may arrive and depart at the same node, rajpootana 173 -> 173, or move inside
+itself, Mesopotamia arriving at the Basra port and leaving from its settlement). 10.7's fix only
+checked hops 0 and 1. Batch 2 broke four hops on the two Ottoman-Mughal routes: Basra port
+(Basra), Izmir port node 30 (Aydin), Thessaloniki node 37 (Macedonia).
+
+Fix: `stale_trade_routes` checks every hop; `patch_trade_routes` re-points a hop whose two nodes
+are held by one other region, and where they are now held by two regions inserts the shortest
+run of land links (TRADE_ROUTES with a settlement end) between them as hops of their own. The
+route now reads ... gujarat 56 -> 100 by sea, basra 100 -> 195, mesopotamia 195 -> 133, anatolia
+133 -> 30, aydin 30 -> 37 by sea, macedonia (end). batch1r: no change. `batch2c_s3_unlocked` =
+`batch2b_s3_unlocked` with the pass applied to startpos (round-trip OK, other files identical).
