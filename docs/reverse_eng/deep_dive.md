@@ -1850,3 +1850,173 @@ at one point. The split's strip carve added 50: `commit_plan.encode_keep` (an or
 re-noded) snapped a new point onto a neighbouring own vertex and kept both. It now collapses
 repeats, and `check_nodes` fails on any repeated id. Rebuilt `batch1z`: zero-length edges 54,
 all distinct ids, as vanilla.
+
+### 10.13 Border lines are precomputed spline models (2026-10-06)
+
+The user's screenshots: lines are drawn along vanilla-derived borders (Spain / Occitania,
+Andorra / Occitania on a relabelled vanilla strip) but never along new ones, whoever owns
+them (Spanish Brittany against French Normandy). Ruled out on the way: the lookup TGA,
+regions.esf rings / quadtree / area fields, CAI boundaries, pathfinding flags, the per-region
+LINE_OF_SIGHT bitmaps (startpos QUAD_TREE_BIT_ARRAY, 2048 x 1024 at 1.25 units per pixel:
+fog-of-war data; 20 vanilla European regions have none and still have lines).
+
+Empire.exe loads `RigidModels/CampaignBorders/<region>.rigid_spline`, else `<region>_1`,
+`_2` ... while they exist (+0xd2f290; material at +0xc323b0: g_border_colour_a / _b,
+border_diffuse). models.pack holds 1,081 of them (156 regions), patch2.pack the ones CA
+regenerated after reshaping regions. Format: b"SPLN", u32 1, u32 1, u16 n + UTF-16 name
+("border:France:1"), u32 1, u32 count, count x (x, height, z) float32 cubic Bezier control
+points (count = 3k + 1, see 10.14); one spline per file, height constant. Map -> spline: x' = (x + 0.04) / 39.462, z' = (y + 0.75) / 39.462 (fitted;
+mean 0.1 units). Each file is one **land-border run** of the region's outline: seas and the
+`lakes` region break a run, any land region continues it (impassable and void land too:
+Alsace is one closed ring past the Alps), a river continues it when land lies on either side
+(a river mouth on a coast does not), and where the outline runs up a river into the region
+and back (the Rhone entering France) the line steps across. Island regions get a 4-point
+placeholder off the map. Each region draws its own runs in its owner's colour, hence two
+parallel lines on a border.
+
+`compiler/borders.py` generates them from regions.esf; regenerating vanilla gives the same
+piece count for 124 of 137 regions and matches CA's lines within 0.4-1.3 units on France,
+Spain, Alsace, Savoy, Flanders, Persia, England and Portugal (the misses are natives / void
+land edge cases in America and North Africa). S3 (`border_splines`) ships files for every
+built region and every split parent (France, Spain), with at least vanilla's piece count so
+no old `_n` file is still found. `batch1z`: 27 files.
+
+### 10.14 Spline points are Bezier control points (2026-10-07)
+
+The first build with border lines crashed on campaign load (dump 7768, +0x174d61, a stream read
+past the end of a mapped view of new_regions.pack). The stream was reading
+`wilderness_arabia_1.rigid_spline` (3 points) and had run 2,068 bytes on through the next three
+files. The loader (+0xc93b72) takes `(count - 1) / 3` segments and loops `segments - 1` times:
+the points are cubic Bezier control points (anchor, control, control, anchor ...), and every
+vanilla file has 3k + 1 of them (island placeholders 4). A count of 3 gives -1, a loop of ~2^32
+(ebx = -58 at the crash, 57 segments of 36 bytes read). Every other file we wrote drew a curve
+through our vertices as if they were controls, losing the tail points.
+
+`batch1z_bz_unlocked` (each edge one straight segment) loaded and drew the lines, but thin and
+angular next to vanilla's.
+
+**How vanilla places them.** On every shared border measured (France / Spain, Alsace, Savoy,
+Flanders; Spain / Portugal) the two neighbours' lines are 0.20 units apart (p10-p90
+0.18-0.24), each about 0.1 inside its own region, hence the tight double line. Anchors are
+0.5-0.8 units apart (max ~2.7) and the curve is Catmull-Rom: tangent-continuous at every
+anchor, handles a third of the chord. `borders.line_anchors` offsets each run `INSET` = 0.1
+into its region (`offset_curve`, mitre joins), merges vertices closer than 0.02 and splits
+edges longer than 1.0; `bezier_controls` writes the Catmull-Rom controls (each handle capped
+at half its chord so a short edge beside a long one cannot loop). Regenerating vanilla France,
+Spain, Portugal, Alsace, Savoy and Flanders lands within 0.05-0.08 units (median) of CA's
+lines, against 0.06-0.18 without the inset; on our borders the pairs are 0.200 apart.
+`batch1z_bs_unlocked` is `batch1z_s3_unlocked` with only the 27 spline files rewritten (every
+other pack file byte-identical); a rebuild from S3 gives the same files. The new borders'
+long straight legs stay straight: that is the regions.esf cut, not the lines.
+
+**River corridors.** `batch1z_bs` drew the inset pairs, but messy lines along the Rhone and
+Saone: a split keeps a river it runs along whole, with `RIVER_MARGIN` (0.35) either side, in
+one region. Vanilla has no such margins: on the Rhone between France and Savoy the river is
+France's and Savoy's outline is its east bank, so Savoy's line hugs the water. Two shapes
+result from our splits:
+
+* a **strip** ~1 unit wide (river plus both margins) owned by one side between two others:
+  the Rhone south of Lyon is Lyonnais's down to the delta, between Occitania and Provence;
+  Burgundy has a Saone finger into the Lyonnais, France one up the Yonne into Burgundy and
+  one on a river into Brittany;
+* a **one-bank margin**: the river inside one region with 0.35 of its land beyond, then the
+  neighbour (the Yonne west of the finger, the Rhone north of the strip).
+
+`batch1z_bc` stepped each strip's owner across the strip's base: one line per bank in game,
+but 0.45 off the water. `borders.virtual_polygons` (`batch1z_bv`) instead redraws the map for
+the lines only: each strip (what an opening of `CORRIDOR_W` = 0.6 removes, with a river over
+at least 15% of it, between regions of one split family) is dissolved, each bank's margin
+going to the region on that side (a Voronoi of their outlines where both sides touch, as at
+the delta) and the river to neither. Lines then hug both banks; the Saone and Yonne fingers
+disappear. None of 13 vanilla regions has a strip.
+
+Tried and dropped for one-bank margins: giving the margin to the neighbour as polygons
+(hairpins and loops where each piece ends), and pulling finished lines onto the bank (long
+arcs where the river leaves the border, missed stretches). Lines-only fixes fight the
+geometry; the clean fix is a split that cuts along the bank itself (the river stays in one
+region, the other's border is its bank: vanilla's France / Savoy), which the regions.esf rule
+(no river straddles two land regions) allows.
+`batch1z_bv_unlocked`: lines regenerated from the build's regions.esf by `border_splines`.
+
+### 10.15 Borders along rivers: vanilla's encoding (2026-10-07)
+
+The user chose to fix the split rather than the lines: a cut along a river should follow
+the bank, as vanilla's borders do. What vanilla does:
+
+* **regions.esf.** Of 157 river areas (region `all`), 48 are *interior*: inside one land
+  region's ring, which has open bank outlines along them. 103 are *border rivers*: outside
+  every land ring, their own ring sharing edges with 2-5 land regions' rings (France / Savoy
+  on the Rhone is `all/61`: France's ring runs along the west bank, Savoy's along the east,
+  and the river's ring records france/0 then savoy/0). 10 more touch one land ring only (a
+  notch). No vanilla edge is both a land ring edge and a land open outline edge, so "an
+  interior river with the border on its bank" does not exist; a river the border follows is
+  taken out of both rings.
+* **pathfinding.esf.** Along a border river there is no border strip: each region's land
+  records touch the river's own records (types 2 / 3, path id 1023) on its bank, and the
+  ~1-unit strip exists only where the two regions' land meets (France / Savoy south of the
+  Rhone). No land record crosses a vanilla border river (only 8 port / slot footprints of
+  type 7 overlap one), so there is nothing like a bridge to label.
+
+Batch 1's splits left five interior rivers along new borders (areas in the built
+regions.esf): 59 Rhone (Lyonnais's; along Occitania 9.2 and Provence 9.5 units), 58 Saone
+(Burgundy's finger; along the Lyonnais 14.3), 55 Yonne (France's; along Burgundy 12.7),
+43 Loire (France's; along Brittany 5.2), 54 (France's; along Burgundy 2.4).
+
+Plan: in `split_regions_esf`, a river area the child's side polygon straddles becomes a
+border river (removed from both rings, the parent's open banks for it dropped, its ring's
+connectivity regenerated) with no margin, land slivers between the drawn line and the river
+going to the region on their bank; rings are rebuilt from three vertex sources (parent ring,
+river ring, new) with new points spliced into every outline holding the edge they land on.
+S2 carves the strip only along land-land stretches of the border. Open risks: a river that
+runs right across one side would cut it in two (fall back to the old rule there), and the AI
+region graph for pairs that would then touch only across a river.
+
+**Built: `batch1r_s3_unlocked`** (`split_region.py --split occitania batch1` from
+`zoneless_base`, S3 `--footprints --obstacles none`, `unlock_factions.py`). `plan_split`
+makes each river a split's side straddles a border river (Rhone 59 at Occitania, Loire 43 at
+Brittany, Saone 58 at Lyonnais, Yonne 55 at Burgundy); the rest of a converted river inside a
+region is a notch, as vanilla's 10 single-region river rings. Rings are rebuilt over the
+parent's ring, the river rings and new points, the overlay snap-rounded to a 1e-4 grid (a
+river ring running along the coast left a zero-width spike at the Loire mouth; stored
+vertices are float32, ~3e-5 apart at y 335); new points on a coast or bank edge are spliced
+into every outline holding it; every old ring vertex must survive. Land between the drawn
+line and a river, narrower than 1.2, goes to the region on its bank unless it is a neck
+(Normandy's land past the end of the Seine joins its two banks; moving it gave Rouen to
+France). The Pays de Retz stays Brittany's, joined across a gap between two Loire areas.
+S2 carves strips only along the land stretches (`border_land`), relabels by `child_half` =
+(side - parent's land) + child's land, and keeps the stored fields of vanilla's odd cells
+beside a carve (`stored_fields` / `restore_fields`: r105 c95 by the Seine). Results: no
+direct parent / child land contact anywhere (the river records separate them, as vanilla's);
+every capital and slot inside its region as in `batch1z`; Lyon's footprint now fits at its
+own spot (35.77, 324.01). Lines: each bank shows its region's line, none along the notches;
+`virtual_polygons` finds no strips.
+
+### 10.16 Batch 2, the Ottoman lands: what the tools needed (2026-10-08)
+
+Fourteen regions (review map, out/split_planning_ottoman): Crete and Cyprus (island areas of
+Greece and Syria), Albania, Aleppo, Macedonia, Wallachia, Hudavendigar, Aydin, Karaman, Adana,
+Trebizond, Erzurum, Mosul, Basra; all Ottoman. Borders were drawn as c.1700 eyalet lines and
+projected by a thin-plate interpolation through the game's own city slot positions (the campaign
+map is warped: a global fit misses Aleppo by 12 units).
+
+* **Islands** (`add_region.py --src --new --areas`): the Canaries path, parametrised. The AI
+  theatre is the source's; big islands have whole-cell run cells and obstacle copies, now
+  relabelled; a sea neighbour the source still touches gets a cloned CAI boundary (Crete and
+  Greece both face the Mediterranean).
+* **Mainland not area 0**: Anatolia's first areas are Aegean islands, Syria's was Cyprus. The
+  main area is now the largest, threaded through areas, quadtree, faces, HLCIs and patrol entries.
+* **River / barrier sides**: Wallachia is everything Bulgaria held north of the Danube (`river_areas`
+  + seeds, gaps between river pieces bridged); Trebizond is the Pontic strip cut off by Anatolia's
+  mountain sub-area (`barrier_points`, one `cuts` line).
+* **Sub-areas**: batch 2 assigns a zone by how much of it the side covers (`sub_areas="cover"`);
+  batch 1 keeps the nearer-piece rule its tested build used (France output byte-identical).
+  A sub-area INSIDE the main ring (Syria's inland zone, outlined by the main area's open edges like
+  an interior river) is kept whole with the cut `INNER_MARGIN` 0.3 off it.
+* **Border detection by edges**: Trebizond's land border is one straight edge between two spliced
+  points, so it has no new vertex; the border is the run of ring edges that are not old ring edges.
+* **Vanilla odd cells at a capital carve**: 34 records round the Bosphorus do not follow the field
+  rules; S3 `place()` now keeps their stored fields (as S2 does), instead of stopping at Bursa.
+
+Build: `zoneless2_base` (zones cleared over France, Spain and the six Ottoman parents) ->
+France splits -> Crete -> Cyprus -> `split_region.py --split batch2` (all 12 pass) -> S3 -> unlock
+-> `batch2_s3_unlocked`.
