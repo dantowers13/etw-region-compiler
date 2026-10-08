@@ -2166,9 +2166,10 @@ def border_splines(regions_root, specs, packs: list[Path]) -> list[tuple[str, by
         if not pk.exists():
             print(f"border lines: {pk} not found (vanilla piece counts unknown)")
             continue
-        b = pk.read_bytes()
-        _, _, _, repsz, nfiles, isz = struct.unpack_from("<4sIIIII", b, 0)
-        idx, p = b[24 + repsz:24 + repsz + isz], 0
+        with open(pk, "rb") as f:                      # the index only: models.pack is 5 GB
+            _, _, _, repsz, nfiles, isz = struct.unpack("<4sIIIII", f.read(24))
+            f.seek(24 + repsz)
+            idx, p = f.read(isz), 0
         for _ in range(nfiles):
             e = idx.index(b"\0", p + 4)
             name = idx[p + 4:e].decode("latin1").lower()
@@ -2238,16 +2239,19 @@ def db_pack(specs: list[RegionSpec], out: Path, loc: bytes | None, tag: str = "n
 # ─── localisation ─────────────────────────────────────────────────────────────
 
 def pack_file(pack: Path, name: str) -> bytes:
-    """One file out of a PFH0 pack."""
-    b = pack.read_bytes()
-    _, _, _, repsz, nfiles, isz = struct.unpack_from("<4sIIIII", b, 0)
-    idx, p, off = b[24 + repsz:24 + repsz + isz], 0, 24 + repsz + isz
-    for _ in range(nfiles):
-        sz = struct.unpack_from("<I", idx, p)[0]
-        e = idx.index(b"\0", p + 4)
-        if idx[p + 4:e].decode("latin1").lower() == name.lower():
-            return b[off:off + sz]
-        p, off = e + 1, off + sz
+    """One file out of a PFH0 pack, reading only the index and that file (models.pack is
+    5 GB)."""
+    with open(pack, "rb") as f:
+        _, _, _, repsz, nfiles, isz = struct.unpack("<4sIIIII", f.read(24))
+        f.seek(24 + repsz)
+        idx, p, off = f.read(isz), 0, 24 + repsz + isz
+        for _ in range(nfiles):
+            sz = struct.unpack_from("<I", idx, p)[0]
+            e = idx.index(b"\0", p + 4)
+            if idx[p + 4:e].decode("latin1").lower() == name.lower():
+                f.seek(off)
+                return f.read(sz)
+            p, off = e + 1, off + sz
     raise KeyError(f"{name} not in {pack}")
 
 
