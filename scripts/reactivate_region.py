@@ -1982,6 +1982,63 @@ def repaint_lookup(regions_root, specs, tga: Path, theatre_flag: int = 2) -> byt
     return bytes(d) if changed else None
 
 
+def border_splines(regions_root, specs, packs: list[Path]) -> list[tuple[str, bytes]]:
+    """The campaign-map border lines (deep_dive 10.13): rigidmodels\\campaignborders spline
+    files for every built region and every split parent (its outline changed), from the
+    final regions.esf. A parent gets at least as many pieces as vanilla had, or the loader
+    still finds the old _n files; island regions get none (vanilla ships placeholders)."""
+    from etwpc.compiler.borders import PACK_DIR, border_runs, spline_files, split_to, virtual_polygons
+    from etwpc.compiler.mesh import Mesh
+    vanilla: dict[str, set] = {}
+    for pk in packs:
+        if not pk.exists():
+            print(f"border lines: {pk} not found (vanilla piece counts unknown)")
+            continue
+        b = pk.read_bytes()
+        _, _, _, repsz, nfiles, isz = struct.unpack_from("<4sIIIII", b, 0)
+        idx, p = b[24 + repsz:24 + repsz + isz], 0
+        for _ in range(nfiles):
+            e = idx.index(b"\0", p + 4)
+            name = idx[p + 4:e].decode("latin1").lower()
+            if name.startswith(PACK_DIR) and name.endswith(".rigid_spline"):
+                stem = name[len(PACK_DIR):-len(".rigid_spline")]
+                base, _, num = stem.rpartition("_")
+                key, n = (base, int(num)) if num.isdigit() and base else (stem, 0)
+                vanilla.setdefault(key, set()).add(n)
+            p = e + 1
+    m = Mesh(regions_root)
+    names = [region_name(r) for r in m.regs]
+    land = {i for i, r in enumerate(m.regs) if r[1].value == "land" and names[i] != "lakes"}
+    rivers = {i for i, r in enumerate(m.regs) if r[1].value == "river"}
+    todo = {s.name: s.region_display for s in specs}
+    for s in specs:
+        if s.parent:
+            todo.setdefault(s.parent, s.parent.replace("_", " ").title())
+    polys, files, report = {}, [], []
+    families = {}
+    for s in specs:
+        if s.parent:
+            families.setdefault(s.parent, {names.index(s.parent)}).add(names.index(s.name))
+    for line in virtual_polygons(m, [names.index(n) for n in todo], rivers, polys, list(families.values())):
+        print(f"   border lines: river {line}")
+    for name, display in todo.items():
+        runs = border_runs(m, names.index(name), land, rivers, polys)
+        had = vanilla.get(name, set())
+        if not runs:
+            report.append(f"{name}: none")
+            continue
+        if had and 0 not in had:
+            runs = split_to(runs, max(had))
+        elif 0 in had and len(runs) > 1:
+            print(f"   WARNING border lines: vanilla {name}.rigid_spline is a single file; keeping its longest run only")
+            runs = [max(runs, key=lambda r: len(r[0]))]
+        f = spline_files(name, runs, display)
+        files += list(f.items())
+        report.append(f"{name}: {len(f)}")
+    print(f"border lines: {len(files)} spline files ({', '.join(report)})")
+    return files
+
+
 def db_pack(specs: list[RegionSpec], out: Path, loc: bytes | None, tag: str = "new_regions",
             extra: list[tuple[str, bytes]] = ()) -> Path:
     regions = make_db([ws(s.name) + ws(s.continent) + b"".join(struct.pack("<I", c) for c in s.colour)
@@ -2083,6 +2140,9 @@ def main():
     ap.add_argument("--loc-pack", type=Path, default=Path("../data/patch_en.pack"),
                     help="pack holding the vanilla text/localisation.loc to extend")
     ap.add_argument("--no-loc", action="store_true", help="ship no localisation (names show as keys)")
+    ap.add_argument("--border-packs", type=Path, nargs="+",
+                    default=[Path("../data/models.pack"), Path("../data/patch2.pack")],
+                    help="vanilla packs holding rigidmodels\\campaignborders (for each parent's piece count)")
     ap.add_argument("--europe-lookup", type=Path, default=Path("data/gc/europe_lookup.tga"),
                     help="vanilla europe_lookup.tga; new europe-theatre regions are painted over its void pixels")
     ap.add_argument("--out", type=Path, default=Path("out/new_regions"))
@@ -2190,6 +2250,7 @@ def main():
     lookup = repaint_lookup(regions_root, specs, a.europe_lookup) if a.europe_lookup.exists() else None
     if lookup is not None:
         extra.append(("campaign_maps\\global_map\\europe_lookup.tga", lookup))
+    extra += border_splines(regions_root, specs, a.border_packs)
     p_pack = db_pack(specs, out, loc, extra=extra)
     print(f"\nwrote {p_reg} ({p_reg.stat().st_size:,} B), "
           f"{p_sp} ({p_sp.stat().st_size:,} B), {p_pack} ({p_pack.stat().st_size:,} B)")
