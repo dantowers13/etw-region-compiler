@@ -628,7 +628,8 @@ def split_regions_esf(root, spec) -> dict:
             # where pathfinding records count as the child's: its side of the line, less the
             # parent's land (its bank of a river), plus the child's land
             "child_half": unary_union([side.difference(ppoly), cpoly]),
-            "class_ids": [a[5].value for a in m.areas(ci)]}
+            "class_ids": [a[5].value for a in m.areas(ci)],
+            "region_poly": lambda ri: unary_union([m.area_polygon(ri, k) for k in range(len(m.areas(ri)))])}
 
 
 # ─── pathfinding.esf (milestone S2) ───────────────────────────────────────────
@@ -1282,6 +1283,21 @@ def split_startpos(sp, spec, info, ids: IdPool) -> None:
             set_list(nb_cr.children[7], list(nb_cr.children[7].value) + [nb_it[1].value])
             set_bool(nb_cr.children[8], True)
             cloned.append(info["names"][oi])
+    # Strait crossings ([3] = 1, length 1.0: vanilla's Bosphorus, Oresund, ...) share no
+    # outline, so the loop above never sees them. The engine links whichever region now
+    # holds the shore: Hudavendigar took Anatolia's, and batch2_s3_unlocked crashed on load
+    # asking for a rumelia -> hudavendigar leg (Empire.exe+0x596e02, deep_dive 10.17).
+    crossed = []
+    for bid in list(p_b):
+        bb = find(bmap[bid], "CAI_REGION_BOUNDARY")
+        if not bb.children[3].value or other_of[bid] not in ai_of:
+            continue
+        other = info["region_poly"](ai_of.index(other_of[bid]))
+        if info["child_poly"].distance(other) < info["region_poly"](pi).distance(other):
+            set_int(bb.children[0 if bb.children[0].value == p_ai else 1], new_ai)
+            p_b.remove(bid)
+            c_b.append(bid)
+            crossed.append(info["names"][ai_of.index(other_of[bid])])
     # the new parent-child edge
     pc = clone_item(b_node, bmap[p_b[0]], ids.cai())
     bb = find(pc, "CAI_REGION_BOUNDARY")
@@ -1304,7 +1320,8 @@ def split_startpos(sp, spec, info, ids: IdPool) -> None:
             th = find(t, "THEATRE")
             set_list(th.children[3], list(th.children[3].value) + [new_ai])
     print(f"startpos: CAI_WORLD_REGIONS[{ci}] {spec['child']} ai {new_ai}; HLCIs {c_h}; boundaries handed over "
-          f"{handed}, cloned {cloned}, new {spec['parent']}-{spec['child']} edge {pc[1].value} length {blen:.1f}")
+          f"{handed}, cloned {cloned}, strait crossings handed over {crossed}, new {spec['parent']}-{spec['child']} "
+          f"edge {pc[1].value} length {blen:.1f}")
 
 
 def patrol(sp, spec, info, ai_of, new_ai, ids: IdPool) -> None:
