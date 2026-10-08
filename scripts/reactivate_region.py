@@ -2212,6 +2212,40 @@ def border_splines(regions_root, specs, packs: list[Path]) -> list[tuple[str, by
     return files
 
 
+def campaign_trees(regions_root, specs, packs: list[Path]) -> list[tuple[str, bytes]]:
+    """The campaign-map trees (deep_dive 10.19) with the ground cleared round every built
+    region's capital and slots, as vanilla leaves it round its own: new settlements were
+    carved out of forests that still stood on them. Reads the vanilla file from the last
+    pack holding it (patch2.pack replaces models.pack's)."""
+    from etwpc.compiler.trees import CLEAR, CLEAR_CAPITAL, PACK_PATH, clear_trees
+    data = None
+    for pk in packs:
+        if pk.exists():
+            try:
+                data = pack_file(pk, PACK_PATH)
+            except KeyError:
+                pass
+    if data is None:
+        print(f"trees: {PACK_PATH} not found in {[str(p) for p in packs]}; trees left as they are")
+        return []
+    regs = regions_root.children[3].children[3]
+    todo = {s.name for s in specs}
+    sites = []
+    for it in regs.children:
+        if region_name(it) not in todo:
+            continue
+        sas = sas_of(it)
+        cx, cy = sas.children[0].value
+        sites.append((cx, cy, CLEAR_CAPITAL))
+        for sl in sas.children[2].children:
+            kind = slot_kind(sl[0].value)
+            x, y = sl[2].value
+            sites.append((x, y, CLEAR_CAPITAL if kind.startswith("settlement_") else CLEAR[kind]))
+    out, removed = clear_trees(data, sites)
+    print(f"trees: {removed} removed round {len(sites)} capitals and slots of {len(todo)} regions")
+    return [(PACK_PATH, out)] if removed else []
+
+
 def db_pack(specs: list[RegionSpec], out: Path, loc: bytes | None, tag: str = "new_regions",
             extra: list[tuple[str, bytes]] = ()) -> Path:
     regions = make_db([ws(s.name) + ws(s.continent) + b"".join(struct.pack("<I", c) for c in s.colour)
@@ -2319,6 +2353,9 @@ def main():
     ap.add_argument("--border-packs", type=Path, nargs="+",
                     default=[Path("../data/models.pack"), Path("../data/patch2.pack")],
                     help="vanilla packs holding rigidmodels\\campaignborders (for each parent's piece count)")
+    ap.add_argument("--tree-packs", type=Path, nargs="*",
+                    default=[Path("../data/models.pack"), Path("../data/patch2.pack")],
+                    help="vanilla packs holding campaign.rigid_trees, later ones winning; none = leave trees")
     ap.add_argument("--europe-lookup", type=Path, default=Path("data/gc/europe_lookup.tga"),
                     help="vanilla europe_lookup.tga; new europe-theatre regions are painted over its void pixels")
     ap.add_argument("--out", type=Path, default=Path("out/new_regions"))
@@ -2427,6 +2464,7 @@ def main():
     if lookup is not None:
         extra.append(("campaign_maps\\global_map\\europe_lookup.tga", lookup))
     extra += border_splines(regions_root, specs, a.border_packs)
+    extra += campaign_trees(regions_root, specs, a.tree_packs)
     p_pack = db_pack(specs, out, loc, extra=extra)
     print(f"\nwrote {p_reg} ({p_reg.stat().st_size:,} B), "
           f"{p_sp} ({p_sp.stat().st_size:,} B), {p_pack} ({p_pack.stat().st_size:,} B)")

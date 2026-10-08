@@ -2062,3 +2062,25 @@ run of land links (TRADE_ROUTES with a settlement end) between them as hops of t
 route now reads ... gujarat 56 -> 100 by sea, basra 100 -> 195, mesopotamia 195 -> 133, anatolia
 133 -> 30, aydin 30 -> 37 by sea, macedonia (end). batch1r: no change. `batch2c_s3_unlocked` =
 `batch2b_s3_unlocked` with the pass applied to startpos (round-trip OK, other files identical).
+
+### 10.19 Campaign trees: one instance file, cleared round new settlements (2026-10-08)
+
+New towns stood in forests (Albania, Adana, Wallachia, the Canaries). Every campaign-map tree is
+an instance in `rigidmodels\campaigntrees\campaign.rigid_trees` (models.pack, replaced by
+patch2.pack); regions.esf, pathfinding and startpos know nothing of them.
+
+File: `G@M=`, u32 1, f32 1024.0, u32 6, u32 type count (174), then per type: u16 n + UTF-16 model
+path (`RigidModels/CampaignTrees/Campaign_tree_coniferous01.rigid_model`), u32 1, u32 count,
+6 f32 model bounds, count x 16 bytes `(x, rotation?, y, ~35..38)` in regions.esf map coordinates.
+27,587 instances, each a cluster model; parsing consumes the file exactly, rewriting is
+byte-identical.
+
+Vanilla keeps ground clear round what it places (distance to the nearest tree over the vanilla
+regions.esf; min / 5th percentile): capitals 1.46 / 1.93, settlement building slots 0.93-1.92 /
+1.5-2.3, ports 0.84 / 1.7, towns 0.59 / 1.45, resource slots 0.67 / 1.2.
+
+`compiler/trees.py` + `reactivate_region.campaign_trees` (S3, `--tree-packs`): every built
+region's capital and settlement building slots clear 2.0, towns and ports 1.5, resource slots 1.2;
+the file ships in new_regions.pack. Batch 2 (30 regions, 210 sites): 87 clusters removed.
+`pack_file` and the border-line index read now seek instead of loading whole packs (models.pack
+is 5.3 GB).
