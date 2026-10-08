@@ -4,7 +4,8 @@ Oman) into the supertexture, so the land can be opened up (deep_dive 10.20).
 
   * parchment: low-chroma light pixels near the void regions (arabia, sahara, central_africa),
     grid lines closed over; small parchment islands next to repainted sea count too
-  * the torn-paper shadow on the painted side is undone by a local brightness gain
+  * the torn-paper shadow on the painted side: undone on land by a local brightness gain;
+    water within 6 units of the old edge is repainted (its shadow is deepest in the Persian Gulf)
   * desert: colour pulled in from the painted land round it (push-pull), fading to the painted
     Nafud's mean colour inland, plus fine detail splatted from painted desert patches
   * mountains: Hejaz / Asir / Yemen, the Red Sea Hills and the Hajar as bands at set distances
@@ -40,7 +41,8 @@ FRAME_Y = 134.0                          # the Europe panel's frame starts at ma
 VOID_LAND = {"arabia", "sahara", "central_africa"}
 DESERT_SRC = ((278, 199, 318, 212), (262, 207, 300, 219))   # painted Nafud / Syrian desert
 MOUNTAIN_SRC = (352, 212, 378, 226)                          # painted Zagros folds
-GULF_REF = (325, 190, 380, 640)                              # painted Persian Gulf (water ramps)
+GULF_REF = (320, 188, 400, 640)                              # painted Persian Gulf (water ramps)
+WATER_SRC = (330, 192, 375, 215)                             # open water of the northern gulf (texture)
 
 
 def push_pull(img, w, levels=9):
@@ -172,7 +174,7 @@ def main():
     taper = np.clip((5 * K0 - d_edge) / K0, 0, 1)
     gain = np.ones((H, W), np.float32)
     shadow = np.zeros((H, W), bool)
-    for kind in (land & (alpha < 128), sea & (alpha > 200)):     # land and water each against their own
+    for kind in (land & (alpha < 128),):
         sh = kind & ~parch & (d_edge < 6 * K0) & (ys > FRAME_Y + 2)
         ref_px = kind & ~parch & (d_edge > 5 * K0) & (d_edge < 7 * K0)
         ref_local = smooth_fill(lum_s[..., None], ref_px, sigma=4)[..., 0]
@@ -182,6 +184,11 @@ def main():
     rgb = np.where(shadow[..., None], np.clip(rgb * gain[..., None], 0, 255), rgb)
     grown = target | (land & (d_edge <= 5) & (ys > FRAME_Y))     # the paper edge itself
     weight = np.clip((10 - ndimage.distance_transform_edt(~grown)) / 10, 0, 1) * frame_w
+    # painted water carries the torn edge's shadow too (darkest where the edge crosses the
+    # Persian Gulf): repaint water within 6 units of any parchment, land or sea, fading 4 -> 6
+    d_any = ndimage.distance_transform_edt(~(parch | paint_sea)) / K0
+    shadow_w = sea & (alpha > 200) & (d_any < 6) & (ys > FRAME_Y)
+    weight = np.maximum(weight, np.where(shadow_w, np.clip((6 - d_any) / 2, 0, 1), 0) * frame_w)
     print(f"parchment: land {paint_land.sum():,} px, sea {paint_sea.sum():,} px; "
           f"shadow gain median {np.median(gain[shadow]):.2f}, max {gain[shadow].max():.2f}")
 
@@ -225,7 +232,7 @@ def main():
     signed = np.where(sea, d_sea, -d_land)
     gx0, gy0, gx1, gy1 = GULF_REF
     in_ref = (xs > gx0) & (xs < gx1) & (ys > gy0) & (ys < gy1)
-    gulf = sea & (alpha > 200) & in_ref
+    gulf = sea & (alpha > 200) & in_ref & (d_any > 6)          # unshadowed open water only
     bins = np.arange(-20, 300)
     sb = np.clip(np.round(signed), -20, 299).astype(int)
     col_ramp, a_ramp = np.zeros((len(bins), 3)), np.zeros(len(bins))
@@ -237,20 +244,24 @@ def main():
     col_ramp[:20] = col_ramp[20]
     col_ramp = ndimage.uniform_filter1d(col_ramp, 9, axis=0)
     water = col_ramp[sb + 20]
-    gres = rgb - water
-    gy, gx = np.nonzero(gulf & (d_sea > 40))
-    patches, Pw = [], 200
-    for _ in range(2000):                                # clean open-water patches of the gulf
-        k = rng.integers(len(gy))
-        py, px = gy[k], gx[k]
-        if py + Pw < H and px + Pw < W and gulf[py:py + Pw, px:px + Pw].all():
-            patches.append(gres[py:py + Pw, px:px + Pw])
+    wbox = st.box(*WATER_SRC)
+    wsrc = wbox[..., :3].astype(np.float32)
+    wres = wsrc - ndimage.gaussian_filter(wsrc, (25, 25, 0))
+    open_w = ndimage.binary_erosion(wbox[..., 3] == 255, np.ones((41, 41)))   # 20 px off any shore
+    patches, Pw = [], 120
+    wy, wx = np.nonzero(open_w[:-Pw, :-Pw])
+    for _ in range(4000):
+        k = rng.integers(len(wy))
+        py, px = wy[k], wx[k]
+        if open_w[py:py + Pw, px:px + Pw].all():
+            patches.append(wres[py:py + Pw, px:px + Pw])
             if len(patches) == 40:
                 break
-    wtex = splat(patches, (H, W), rng, P=160, S=100)
+    assert patches, "no open-water patch in WATER_SRC"
+    wtex = splat(patches, (H, W), rng, P=100, S=64)
     water = np.clip(water + 0.8 * ndimage.gaussian_filter(wtex, (2, 2, 0)), 0, 255)
     # tint by the nearest painted water (the Red Sea is bluer than the gulf the ramp came from)
-    known_w = sea & (alpha > 200) & ~target & (d_sea > 15) & (d_edge > 6 * K0)
+    known_w = sea & (alpha > 200) & ~target & (d_sea > 15) & (d_any > 6)
     local = smooth_fill(rgb, known_w)
     tint = np.clip(local / rgb[gulf & (d_sea > 15)].mean(0), 0.6, 1.6)
     water = np.clip(water * tint, 0, 255)

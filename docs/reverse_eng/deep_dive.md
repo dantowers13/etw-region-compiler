@@ -2116,3 +2116,11 @@ Red Sea and the Gulf of Oman (east of Musandam, map x > 401), ridged with patche
 Zagros; water colour and alpha by distance from land, sampled from the painted Persian Gulf and
 tinted by the nearest painted water. Output `new_regions_map.pack` (vanilla stpd + 6.8 MB of
 appended tiles). The relief is flat: the terrain height source is not found yet.
+
+In game (`map_poc3`) the southern Persian Gulf showed as dark navy with a black ragged edge: the
+torn edge's painted shadow is deepest on the water there, and the shadow gain (measured from land
+parchment only) barely touched it, while the water ramp was sampled from that shadowed water.
+`map_poc4`: painted water within 6 units of any parchment (land or sea) is repainted, fading out
+4 -> 6 units; ramps and tint come from unshadowed open water only; the water texture is splatted
+from windows of the northern gulf that are open water 20 px off any shore (a box with coast in it
+striped the water with fins).
