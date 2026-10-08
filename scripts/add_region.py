@@ -43,12 +43,14 @@ from reactivate_region import (  # noqa: E402
     set_v2, roundtrip_ok,
 )
 
+# Defaults: the Canary Islands (deep_dive 9). --src / --new / --areas override them for
+# another island region (Crete out of Greece, Cyprus out of Syria).
 SRC_REGION = "unexplorable"
 NEW_REGION = "canary_islands"
 NEW_AREAS = [1, 2, 3, 4]              # Canary Islands
 GIVE_AREAS = {0: "portugal"}          # Madeira
 DORMANT_TEMPLATE = "central_italy"    # a dormant land record with no boundaries
-EUROPE_AI_THEATRE = 34                # CAI theatre of portugal, morocco, atlantic_ocean_e
+EUROPE_AI_THEATRE = 34                # CAI theatre of portugal, morocco, atlantic_ocean_e; None = the source's
 
 
 def packed(region: int, area: int) -> int:
@@ -187,7 +189,7 @@ def split_startpos(sp, info: dict, ids: IdPool) -> None:
     set_int(item[0].children[0], 0)                       # OWNED_INDIRECT
     clear_bdi(item)
     cr = find(item, "CAI_REGION")
-    set_list(cr.children[0], [EUROPE_AI_THEATRE])
+    set_list(cr.children[0], [EUROPE_AI_THEATRE] if EUROPE_AI_THEATRE is not None else list(src_cr.children[0].value))
     set_int(cr.children[2], 0)
     set_list(cr.children[3], [])
     cr.children[4].value, cr.children[4].raw = info["centre"][0], b""
@@ -217,24 +219,42 @@ def split_startpos(sp, info: dict, ids: IdPool) -> None:
     set_list(src_cr.children[1], [src_h[a] for a in info["keep"]])
     set_list(cr.children[1], new_h)
 
-    # boundaries: take over unexplorable's edge to each neighbour it no longer touches
-    bounds = {it[1].value: find(it, "CAI_REGION_BOUNDARY") for it in find(sp, "CAI_WORLD_REGION_BOUNDARIES").children}
+    # boundaries: take over the source's edge to each neighbour it no longer touches, and
+    # clone its edge to each neighbour both still touch (Crete and Greece both face the
+    # Mediterranean; the Canaries took all of unexplorable's Atlantic edges)
+    b_node = find(sp, "CAI_WORLD_REGION_BOUNDARIES")
+    b_items = {it[1].value: it for it in b_node.children}
+    bounds = {k: find(it, "CAI_REGION_BOUNDARY") for k, it in b_items.items()}
     src_b = list(src_cr.children[7].value)
-    moved_b = []
+    moved_b, cloned_b = [], []
     for bid in src_b:
         b = bounds[bid]
         a_, b_ = b.children[0].value, b.children[1].value
         other = b_ if a_ == ai_of[si] else a_
         oi = ai_of.index(other)
-        if oi in info["new_nb"] and oi not in info["src_nb"]:
+        if oi not in info["new_nb"]:
+            continue
+        if oi not in info["src_nb"]:
             set_int(b.children[0 if a_ == ai_of[si] else 1], new_ai)
             moved_b.append(bid)
-    missing = [info["names"][oi] for oi in info["new_nb"]
-               if not any(ai_of[oi] in (bounds[b].children[0].value, bounds[b].children[1].value) for b in moved_b)]
-    assert not missing, f"no boundary to retarget for {missing}; would need a new one"
+        else:
+            it = deep_copy(b_items[bid])
+            nid = ids.cai()
+            set_int(it[1], nid)
+            b_node.children.append(it)
+            set_int(find(it, "CAI_REGION_BOUNDARY").children[0 if a_ == ai_of[si] else 1], new_ai)
+            ocr = find(items[oi], "CAI_REGION")
+            set_list(ocr.children[7], list(ocr.children[7].value) + [nid])
+            set_bool(ocr.children[8], True)
+            cloned_b.append(nid)
+    new_b = moved_b + cloned_b
+    nb_ai = {bounds[b].children[0].value for b in moved_b} | {bounds[b].children[1].value for b in moved_b}
+    nb_ai |= {find(it, "CAI_REGION_BOUNDARY").children[k].value for it in b_node.children if it[1].value in cloned_b for k in (0, 1)}
+    missing = [info["names"][oi] for oi in info["new_nb"] if ai_of[oi] not in nb_ai]
+    assert not missing, f"no boundary to retarget or clone for {missing}; would need a new one"
     set_list(src_cr.children[7], [b for b in src_b if b not in moved_b])
-    set_list(cr.children[7], moved_b)
-    set_bool(cr.children[8], bool(moved_b))
+    set_list(cr.children[7], new_b)
+    set_bool(cr.children[8], bool(new_b))
 
     items.append(item)
     add_border_patrol(sp, info, ai_of, new_ai, ids)
@@ -246,7 +266,7 @@ def split_startpos(sp, info: dict, ids: IdPool) -> None:
             th = find(t, "THEATRE")
             set_list(th.children[3], list(th.children[3].value) + [new_ai])
     print(f"startpos: CAI_WORLD_REGIONS[{ni}] {NEW_REGION} ai {new_ai}, HLCIs {new_h}, "
-          f"boundaries {moved_b} (taken from {SRC_REGION}); {SRC_REGION} keeps {len(info['keep'])} HLCIs; "
+          f"boundaries {moved_b} taken from {SRC_REGION}, {cloned_b} cloned; {SRC_REGION} keeps {len(info['keep'])} HLCIs; "
           f"gift HLCIs {[src_h[a] for a in info['gifts']]}")
 
 
@@ -294,8 +314,11 @@ def relabel_pathfinding(pf_root, sp, info: dict) -> None:
             nb.append((a, b))
         it.bounds = nb
 
-    # relabel the moved areas' land records (all island cells are header cells)
-    relabel = {"new": 0, "gift": 0}
+    # relabel the moved areas' land records: header cells' records, and whole-cell (run)
+    # cells, which get their own item (a big island such as Crete has some)
+    from etwpc.compiler.footprint import CellSpec
+    relabel = {"new": 0, "gift": 0, "run": 0}
+    run_specs = {}
     targets = [(a, new_pid, "new") for a in NEW_AREAS] + [(a, p, "gift") for a, p in gift_pid.items()]
     pad = g.cs
     for a, pid, kind in targets:
@@ -307,7 +330,10 @@ def relabel_pathfinding(pf_root, sp, info: dict) -> None:
                 k, j = g.cell_item[r * g.cols + c]
                 it = g.items[k]
                 if j or not it.bounds:
-                    assert it.pid != src_pid, f"run cell of {SRC_REGION} at ({r},{c}); needs an item split"
+                    if it.pid == src_pid:
+                        spc = g.spec(r, c)
+                        run_specs[r * g.cols + c] = CellSpec(spc.hdr, [], spc.word, pid)
+                        relabel["run"] += 1
                     continue
                 nb = []
                 for x, y in it.bounds:
@@ -318,7 +344,15 @@ def relabel_pathfinding(pf_root, sp, info: dict) -> None:
                         relabel[kind] += 1
                     nb.append((x, y))
                 it.bounds = nb
-    assert relabel["new"], "no island records relabelled"
+    assert relabel["new"] or relabel["run"], "no island records relabelled"
+    if run_specs:
+        g._apply(run_specs)
+    moved_cells = set()
+    for a, pid, kind in targets:
+        (x0, y0), (x1, y1) = info["moved_boxes"][a]
+        r0, c0 = g.cell_of(x0 - pad, y0 - pad)
+        r1, c1 = g.cell_of(x1 + pad, y1 + pad)
+        moved_cells |= {((r, c), pid) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)}
 
     ch = g.gd.children
     g.i2.append(info["new_idx"])
@@ -345,19 +379,22 @@ def relabel_pathfinding(pf_root, sp, info: dict) -> None:
     item = find(sp, "CAMPAIGN_PATHFINDER").children[0].children[PF_GRID]
     osys = ObstacleSystem(item)
     ob_shift = ob_src = 0
+    cell_pid = {rc: pid for rc, pid in moved_cells}
     for e in osys.entries:
         pairs = list(e.pairs)
         for i in range(0, len(pairs), 2):
             be = BoundaryEntry.from_packed(pairs[i], pairs[i + 1])
-            if be.path_type == 0 and be.path_id == src_pid:
-                ob_src += 1            # an obstacle cell on a moved area would need relabelling too
+            if be.path_type == 0 and be.path_id == src_pid and tuple(e.cell) in cell_pid:
+                be.path_id = cell_pid[tuple(e.cell)]        # an obstacle's copy of a moved area's record
+                pairs[i], pairs[i + 1] = be.to_packed()
+                ob_src += 1
             if be.path_id != shifted(be.path_id):
                 be.path_id = shifted(be.path_id)
                 pairs[i], pairs[i + 1] = be.to_packed()
                 ob_shift += 1
         e.pairs = pairs
     osys.flush()
-    print(f"  startpos obstacle boundary records shifted: {ob_shift} (records on {SRC_REGION}'s pid: {ob_src})")
+    print(f"  startpos obstacle boundary records shifted: {ob_shift}; copies on the moved areas relabelled: {ob_src}")
 
     # startpos: one bool per path id in the grid copy
     flags = next(c for c in item if isinstance(c, ESFPrimitive) and c.type_tag == 0x41)
@@ -542,7 +579,14 @@ def main():
                     help="give the new region its own path id (M2); without it pathfinding is untouched")
     ap.add_argument("--copy-from", type=Path, help="also copy *.pack (and pathfinding.esf without M2) from this build dir")
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--src", help="region the areas come from (default: the Canaries' unexplorable)")
+    ap.add_argument("--new", help="the new region's key")
+    ap.add_argument("--areas", type=int, nargs="+", help="the source's area indices that become the new region")
     a = ap.parse_args()
+    if a.src or a.new or a.areas:
+        assert a.src and a.new and a.areas, "--src, --new and --areas go together"
+        global SRC_REGION, NEW_REGION, NEW_AREAS, GIVE_AREAS, EUROPE_AI_THEATRE
+        SRC_REGION, NEW_REGION, NEW_AREAS, GIVE_AREAS, EUROPE_AI_THEATRE = a.src, a.new, list(a.areas), {}, None
     a.out.mkdir(parents=True, exist_ok=True)
 
     rr_ = ESFReader(a.regions_esf)
