@@ -1506,32 +1506,101 @@ def trade_endpoint_regions(root) -> dict[int, int]:
     return out
 
 
+NO_NODE = 0xFFFFFFFF
+HOP = 5     # INTERNATIONAL_TRADE_ROUTE: [count, count x (region, v2, depart node, next node, by sea), ...]
+
+
+def route_hops(r) -> list[tuple]:
+    """(region, depart, next, by sea) per hop; the last hop is (region, -1, -1, False)."""
+    c = r.children
+    return [(c[1 + HOP * k].value, c[3 + HOP * k].value, c[4 + HOP * k].value, c[5 + HOP * k].value)
+            for k in range(c[0].value)]
+
+
 def stale_trade_routes(root) -> list[tuple]:
-    """Stored INTERNATIONAL_TRADE_ROUTEs whose region id is not the region holding the
-    endpoint it is paired with: [1] goes with start node [3], [6] with end node [4]
-    (vanilla: 74 of 74 match, including Mughal's route from Mesopotamia). On load the
-    engine looks the node up among that region's ports and settlements and hashes the
-    result, so a stale one is a null-key crash (Empire.exe+0x51470 via +0x5e0bf6)."""
+    """Stored INTERNATIONAL_TRADE_ROUTE hops whose region does not hold a node the hop
+    stands on. A route is a list of hops (region, depart, next, by sea); each hop's region
+    must hold the node the route arrives at (the previous hop's next) and the node it
+    departs from (vanilla: 0 exceptions in 72 routes, including Mughal's from
+    Mesopotamia). On load the engine looks each up among that region's ports and
+    settlements and hashes the result, so a stale one is a null-key crash
+    (Empire.exe+0x51470 via +0x5e0bf6): Le Havre in batch1 (deep_dive 10.7), the Mughal
+    route through Basra, Izmir and Thessaloniki in batch2 (10.18)."""
     where = trade_endpoint_regions(root)
     bad = []
     for r in find_all(root, "INTERNATIONAL_TRADE_ROUTE"):
-        for ri, ni in ((1, 3), (6, 4)):
-            want = where.get(r.children[ni].value)
-            if want is not None and r.children[ri].value != want:
-                bad.append((r, ri, ni, want))
+        prev = None
+        for k, (reg, dep, nxt, _) in enumerate(route_hops(r)):
+            for node in (prev, dep):
+                if node not in (None, NO_NODE) and where.get(node) not in (None, reg):
+                    bad.append((r, k, node, where[node]))
+            prev = nxt
     return bad
 
 
 def patch_trade_routes(root) -> None:
-    """Re-point stored trade routes at the region now holding their endpoint. A split
+    """Make every stored trade route hop stand in the region holding its nodes. A split
     moves the parent's port slots into the child under their old keys (port:france:
-    le_havre is Normandy's), and France's, Louisiana's and Sweden's routes through Le Havre
-    still named France: batch1_s3_unlocked crashed once the loading bar finished."""
-    bad = stale_trade_routes(root)
-    for r, ri, ni, want in bad:
-        set_int(r.children[ri], want)
-    print(f"trade routes: {len(bad)} region ids re-pointed to the endpoint's region "
-          f"(nodes {sorted({r.children[ni].value for r, _, ni, _ in bad})})")
+    le_havre is Normandy's), so routes through them still named the parent:
+    batch1_s3_unlocked crashed once the loading bar finished (deep_dive 10.7). A hop whose
+    arrival and departure are held by one other region is re-pointed at it; one whose two
+    nodes now sit in different regions (the Mughal route lands at Basra's port, now the
+    Basra region's, and leaves Mesopotamia overland) gets the shortest run of land links
+    between them as hops of their own (deep_dive 10.18)."""
+    tm = find(root, "CAMPAIGN_TRADE_MANAGER")
+    where = trade_endpoint_regions(root)
+    settlements = {it[1].value for it in find(tm, "SETTLEMENT_INDICES").children}
+    land: dict[int, set] = {}
+    for t in find(tm, "TRADE_ROUTES").children:
+        a, b = t[0].value, t[1].value
+        if (a in settlements or b in settlements) and a in where and b in where:
+            land.setdefault(a, set()).add(b)
+            land.setdefault(b, set()).add(a)
+
+    def land_path(a, b):
+        seen, frontier = {a: None}, [a]
+        while frontier and b not in seen:
+            nxt = []
+            for u in frontier:
+                for v in sorted(land.get(u, ())):
+                    if v not in seen:
+                        seen[v] = u
+                        nxt.append(v)
+            frontier = nxt
+        assert b in seen, f"no land path between trade nodes {a} and {b}"
+        path = [b]
+        while path[-1] != a:
+            path.append(seen[path[-1]])
+        return path[::-1]
+
+    relabelled, inserted = [], []
+    for r in {id(r): r for r, *_ in stale_trade_routes(root)}.values():
+        hops, out, prev = route_hops(r), [], None
+        for reg, dep, nxt, sea in hops:
+            held = {where.get(n) for n in (prev, dep) if n not in (None, NO_NODE)} - {None}
+            if len(held) == 2:
+                path = land_path(prev, dep)
+                out += [(where[u], u, v, False) for u, v in zip(path, path[1:])]
+                inserted.append(f"{prev}->{dep} via {path[1:-1]}")
+                reg = where[dep]
+            elif held and reg not in held:
+                relabelled.append(f"{reg}->{next(iter(held))}")
+                reg = next(iter(held))
+            out.append((reg, dep, nxt, sea))
+            prev = nxt
+        proto = r.children[1:1 + HOP]
+        body = []
+        for reg, dep, nxt, sea in out:
+            h = [deep_copy(x) for x in proto]
+            set_int(h[0], reg)
+            set_int(h[2], dep)
+            set_int(h[3], nxt)
+            set_bool(h[4], sea)
+            body += h
+        set_int(r.children[0], len(out))
+        r.children[1:1 + HOP * len(hops)] = body
+    print(f"trade routes: {len(relabelled)} hops re-pointed to the region holding their nodes "
+          f"({relabelled}); {len(inserted)} land runs inserted ({inserted})")
     assert not stale_trade_routes(root)
 
 
