@@ -144,6 +144,21 @@ class RegionSpec:
     capital_raw: bytes | None = None    # the capital kept capital_slot's outline (place_split_footprints)
 
 
+# Batch 2 parents (vanilla startpos REGION[23], [25], [36]): the children take their rebels
+# faction, culture and resources.
+PARENT2 = {
+    "greece": ("greece", "sc_european_south", ["middle_east_and_europe", "europe", "galleys", "med_coast", "global", "middle_east"]),
+    "syria": ("ottoman_rebels", "sc_mideast_islamic", ["colonial_euro_factions", "africa_west_indies", "galleys", "desert",
+                                                       "med_coast", "middle_east_and_europe", "camels", "kurds", "middle_east", "global"]),
+    "rumelia": ("ottomans", "sc_mideast_islamic", ["galleys", "europe", "med_coast", "middle_east_and_europe", "middle_east", "global"]),
+    "bulgaria": ("slavic_rebels", "sc_european_east", ["global", "med_coast", "middle_east", "europe", "wallachia",
+                                                       "middle_east_and_europe", "galleys"]),
+    "anatolia": ("ottoman_rebels", "sc_mideast_islamic", ["med_coast", "global", "anatolia", "middle_east", "galleys",
+                                                          "colonial_euro_factions", "middle_east_and_europe", "africa_west_indies"]),
+    "mesopotamia": ("mamelukes", "sc_mideast_islamic", ["global", "camels", "desert", "colonial_euro_factions",
+                                                        "middle_east_and_europe", "kurds", "africa_west_indies", "middle_east"]),
+}
+
 # Names are ~1700 (approved 2026-10-01); URR's legendary/anachronistic ones are replaced.
 # Owners must own a land region in vanilla (rebels own none), and the template must be
 # one of that owner's regions.
@@ -404,6 +419,89 @@ SPECS: dict[str, RegionSpec] = {s.name: s for s in [
         culture="sc_european_south", population=(0, 0, 0), colour=(10, 126, 70),
         religion=(("rel_catholic", 1.0),),
     ),
+    # Batch 2, the Ottoman lands (approved 2026-10-08, out/split_planning_ottoman): Crete and
+    # Cyprus are island areas moved by add_region.py, the rest split by split_region.py. All
+    # stay Ottoman; template armenia (an Ottoman minor settlement, as for Jawf). Culture,
+    # rebels faction and resources follow the parent.
+    *[RegionSpec(
+        name=n, theatre_flag=2, pf_grid=2, theatre_name="europe", template="armenia",
+        region_display=disp, settlement_key=f"settlement:{n}:{skey}", settlement_display=sdisp,
+        slot_map={}, donor_settlement_key="", parent=par, capital_slot=cslot, transfers=tr,
+        positions=pos, parent_share=share, footprints="carve", owner_faction="ottomans",
+        emergent_nation=PARENT2[par][0], rebels_name=rebels, culture=PARENT2[par][1],
+        population=(0, 0, 0), colour=col, religion=rel, resources=PARENT2[par][2],
+    ) for n, disp, skey, sdisp, par, cslot, tr, pos, share, rebels, col, rel in [
+        ("crete", "Crete", "candia", "Candia", "greece", None,
+         {"port:greece:heraklion": (None, None, None),
+          "wine:greece:central": ("wine:crete:messara", "Messara Vineyards", None)},
+         {"capital": (178.3, 251.0)}, (0.12, 0.10), "Cretan Rebels", (64, 150, 201),
+         (("rel_orthodox", 0.7), ("rel_islamic", 0.3))),
+        ("cyprus", "Cyprus", "nicosia", "Nicosia", "syria", None,
+         {"port:syria:limassol": (None, None, None),
+          "iron:syria:cyprus": ("iron:cyprus:troodos", "Troodos Copper Mines", None)},
+         {"capital": (236.68, 250.18)}, (0.08, 0.08), "Cypriot Rebels", (232, 139, 52),
+         (("rel_orthodox", 0.7), ("rel_islamic", 0.3))),
+        ("albania", "Albania", "durres", "Durrës", "greece", None,
+         {"sheep:greece:west": ("sheep:albania:myzeqe", "Myzeqe Pastures", None)},
+         {"capital": (140.4, 293.6)}, (0.15, 0.10), "Albanian Rebels", (172, 30, 52),
+         (("rel_islamic", 0.6), ("rel_orthodox", 0.3), ("rel_catholic", 0.1))),
+        ("aleppo", "Aleppo", "aleppo", "Aleppo", "syria", "town:syria:aleppo",
+         {"town:syria:aleppo": ("town:aleppo:antioch", "Antioch", (262.54, 258.14)),
+          "port:syria:latakia": (None, None, None),
+          "egypt:syria:north": ("egypt:aleppo:north", "Aleppo Cotton Fields", None)},
+         {}, (0.40, 0.40), "Aleppan Rebels", (158, 113, 47),
+         (("rel_islamic", 0.85), ("rel_orthodox", 0.15))),
+        ("macedonia", "Macedonia", "salonica", "Salonica", "rumelia", None,
+         {"port:rumelia:thessaloniki": (None, None, None),
+          "town:rumelia:skopje": ("town:macedonia:skopje", "Skopje", None),
+          "town:rumelia:kozani": ("town:macedonia:kozani", "Kozani", None)},
+         {"capital": (164.0, 290.0)}, (0.35, 0.35), "Macedonian Rebels", (226, 87, 76),
+         (("rel_orthodox", 0.6), ("rel_islamic", 0.4))),
+        ("wallachia", "Wallachia", "bucharest", "Bucharest", "bulgaria", "town:bulgaria:bucharest",
+         {"town:bulgaria:bucharest": ("town:wallachia:targoviste", "Târgoviște", (181.51, 321.04)),
+          "town:bulgaria:craiova": ("town:wallachia:craiova", "Craiova", None),
+          "wheat:bulgaria:sofia": ("wheat:wallachia:baragan", "Bărăgan Wheat Fields", None)},
+         {}, (0.45, 0.45), "Wallachian Rebels", (247, 206, 70),
+         (("rel_orthodox", 1.0),)),
+        ("hudavendigar", "Hüdavendigâr", "bursa", "Bursa", "anatolia", "town:anatolia:bursa",
+         {"town:anatolia:bursa": ("town:hudavendigar:balikesir", "Balıkesir", (197.18, 281.17))},
+         {}, (0.15, 0.15), "Bursan Rebels", (86, 160, 120),
+         (("rel_islamic", 0.85), ("rel_orthodox", 0.15))),
+        ("aydin", "Aydın", "aydin", "Aydın", "anatolia", None,
+         {"port:anatolia:izmir": (None, None, None),
+          "wine:anatolia:west": ("wine:aydin:west", "Aegean Vineyards", None)},
+         {"capital": (199.5, 268.8)}, (0.15, 0.18), "Aydınlı Rebels", (120, 76, 170),
+         (("rel_islamic", 0.8), ("rel_orthodox", 0.2))),
+        ("karaman", "Karaman", "konya", "Konya", "anatolia", "town:anatolia:konya",
+         {"town:anatolia:konya": ("town:karaman:karaman", "Karaman", (235.60, 264.10)),
+          "port:anatolia:antalya": (None, None, None),
+          "iron:anatolia:denizli": ("iron:karaman:taurus", "Taurus Iron Mines", None)},
+         {}, (0.15, 0.15), "Karamanid Rebels", (190, 140, 96),
+         (("rel_islamic", 0.95), ("rel_orthodox", 0.05))),
+        ("adana", "Adana", "adana", "Adana", "anatolia", None,
+         {"wheat:anatolia:adana": ("wheat:adana:cukurova", "Çukurova Wheat Fields", None)},
+         {"capital": (254.5, 263.8)}, (0.06, 0.06), "Cilician Rebels", (219, 112, 147),
+         (("rel_islamic", 0.85), ("rel_orthodox", 0.15))),
+        ("trebizond", "Trebizond", "trabzon", "Trabzon", "anatolia", "town:anatolia:trabzon",
+         {"town:anatolia:trabzon": ("town:trebizond:rize", "Rize", (286.8, 290.5))},
+         {}, (0.06, 0.06), "Pontic Rebels", (46, 139, 124),
+         (("rel_islamic", 0.7), ("rel_orthodox", 0.3))),
+        ("erzurum", "Erzurum", "erzurum", "Erzurum", "anatolia", "town:anatolia:erzurum",
+         {"town:anatolia:erzurum": ("town:erzurum:erzincan", "Erzincan", (280.98, 280.28)),
+          "town:anatolia:batman": ("town:erzurum:diyarbakir", "Diyarbakır", None)},
+         {}, (0.12, 0.10), "Kurdish Rebels", (139, 69, 19),
+         (("rel_islamic", 0.8), ("rel_orthodox", 0.2))),
+        ("mosul", "Mosul", "mosul", "Mosul", "mesopotamia", "town:mesopotamia:mosul",
+         {"town:mesopotamia:mosul": ("town:mosul:sinjar", "Sinjar", (298.66, 255.05)),
+          "town:mesopotamia:erbil": ("town:mosul:erbil", "Erbil", None),
+          "egypt:mesopotamia:kirkuk": ("egypt:mosul:kirkuk", "Kirkuk Cotton Fields", None)},
+         {}, (0.30, 0.30), "Mosuli Rebels", (98, 120, 52),
+         (("rel_islamic", 0.95), ("rel_orthodox", 0.05))),
+        ("basra", "Basra", "basra", "Basra", "mesopotamia", None,
+         {"port:mesopotamia:basra": (None, None, None)},
+         {"capital": (341.0, 214.0)}, (0.20, 0.25), "Basran Rebels", (70, 92, 160),
+         (("rel_islamic", 1.0),)),
+    ]],
 ]}
 
 
@@ -1650,8 +1748,8 @@ def place_split_footprints(spec, g: AreaGrid, sp_root, regions_root, avoid=froze
     geometry valid, so they are allowed."""
     from shapely.geometry import Polygon
     from etwpc.compiler.coastal import (CellView, carve_footprint, check_cells, check_nodes,
-                                        find_outline_site, outline_cells, ring_of, self_test,
-                                        uncarve_footprint)
+                                        find_outline_site, outline_cells, restore_fields, ring_of,
+                                        stored_fields, uncarve_footprint)
     rd = regions_root.children[3].children[3]
     names = [region_name(r) for r in rd.children]
     pid = g.pid_of(names.index(spec.name))
@@ -1696,11 +1794,16 @@ def place_split_footprints(spec, g: AreaGrid, sp_root, regions_root, avoid=froze
                                               p_inside if parent else inside, min_land=min_land, taken=taken,
                                               avoid=avoid, avoid_ring=frozenset(), allow_run=True, skip=skip)
             r0, c0 = g.cell_of(x, y)
-            bad = self_test(view, [(r, c) for r in range(r0 - 4, r0 + 5) for c in range(c0 - 4, c0 + 5)])
-            assert not bad, f"{spec.name} {label}: encoding rules do not reproduce cells near {(x, y)}: {bad[:3]}"
+            # vanilla's odd cells nearby (the rules miss them: 34 records round the Bosphorus)
+            # keep their stored fields where the carve only recomputes them
+            odd = stored_fields(view, [(r, c) for r in range(r0 - 4, r0 + 5) for c in range(c0 - 4, c0 + 5)])
             snap = g.snapshot()
             res = carve_footprint(view, outline, ppid if parent else pid, allow_run=True)
+            carved = set(res["cells"])
+            kept = restore_fields(view, {rc: v for rc, v in odd.items() if rc not in carved})
+            view = CellView(g)
             bad = check_cells(view, res["cells"] + sorted(ring_of(res["cells"]))) + check_nodes(view, res["cells"])
+            bad += [f"odd cell {rc} changed shape" for rc in kept]
             if not bad:
                 break
             assert len(skip) < 20, f"{spec.name} {label}: carved cells break a vanilla invariant: {bad[:3]}"
