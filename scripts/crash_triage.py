@@ -49,6 +49,10 @@ KNOWN = {
     0x00758ff6: "pathfinder path-straightening (funnel) looped until its array doubling failed (memory/disk climbs, "
                 "game freezes first): two regions' land touching with no border strip (Oct 6 batch1, Lyonnais/"
                 "Burgundy; deep_dive 10.8)",
+    0x00596e02: "transport-graph link lookup returned null: the AI asked for a leg between two adjacent regions "
+                "with no CAMPAIGN_TRADE_MANAGER TRADE_ROUTE; the node pair is at [esp+0x58]/[esp+0x5c] (Oct 2 "
+                "labrador-wilderness_canada, deep_dive 8.17; Oct 8 batch2 rumelia-hudavendigar across the "
+                "Bosphorus, deep_dive 10.17)",
     0x0064f66f: "AI region route step: region missing from the AI region-graph map (great_plains/new_mexico, whose "
                 "only land neighbours were dormant; Oct 1 new_regions_noobs; deep_dive 8.14)",
 }
@@ -56,7 +60,12 @@ KNOWN = {
 # Shared functions (the hash at +0x51470) are told apart by the first return address.
 KNOWN_CALLERS = {
     0x005e0bfb: "stored INTERNATIONAL_TRADE_ROUTE names a region that does not hold its port/settlement node, "
-                "after the loading bar (Oct 6 batch1_s3_unlocked: Le Havre moved to Normandy; deep_dive 10.7)",
+                "after the loading bar (Oct 6 batch1_s3_unlocked: Le Havre moved to Normandy; deep_dive 10.7; "
+                "Oct 8 batch2b: a middle hop, Basra port under Mesopotamia, 10.18). The route's 24-byte hop "
+                "records (region*, v2, depart, next, by-sea) are at esi",
+    0x00bf686e: "stream read (+0x174d40) of a float3; if +0xc93bb8 follows, it is a rigid_spline's points: a "
+                "control-point count that is not 3k + 1 (a 3-point spline loops ~2^32 times past the file; Oct 6 "
+                "batch1z border lines; deep_dive 10.14)",
 }
 
 
