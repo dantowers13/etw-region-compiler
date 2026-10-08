@@ -2084,3 +2084,35 @@ region's capital and settlement building slots clear 2.0, towns and ports 1.5, r
 the file ships in new_regions.pack. Batch 2 (30 regions, 210 sites): 87 clusters removed.
 `pack_file` and the border-line index read now seek instead of loading whole packs (models.pack
 is 5.3 GB).
+
+### 10.20 The campaign map's painted texture: Arabia and the Red Sea painted in (2026-10-08)
+
+The grey land south of Jawf is not a shader mask (`t_visible` / `campaign\terrain\visible_area.dds`
+is declared in fx\shroud.fx_fragment but never sampled). Land and sea colour come straight from
+`data/supertexture.pack` (`world_.stpi` + `world_.stpd`, 178 MB) through fx\supertexturetile.fx;
+diffuse alpha is the sea mask (255 water, 0 land). The texture is a hand-painted parchment
+atlas, one framed panel per theatre; south of a torn-paper edge (its shadow painted on the
+painted side, darkening to 0.55 over ~4 map units) Arabia, Sudan and the southern Red Sea are
+bare parchment with drawn coasts, all alpha 0: grey, flat land in game.
+
+Format (`compiler/supertexture.py`): stpi = u32 7, 65536, 32768, 512, 262272, 7 mips; per mip u32
+tiles_x, tiles_y and row-major 20-byte records (stpd offset, compressed size, decompressed size,
+content hash, flags 0x67f200 stored / 0x67f201 reuse; 2,653 stored tiles fill stpd exactly).
+stpd = zlib'd 512 x 512 DXT5 DDS. Mip m tile (i, j) = the 2x2 box of mip m-1 tiles. The hash is a
+dedup key (not crc32 or adler32); new tiles take random ones and the game accepts them. Map ->
+mip-0 pixel: ((x + 1280) * 25.6, (640 - y) * 25.6), checked against regions.esf coasts; the Europe
+panel's frame starts at map y ~132.5 (Port Sudan and the whole Gulf coast inside it, Aden not).
+
+A movie pack holding both files overrides supertexture.pack. First test (`map_poc1`): land went
+black when zoomed out. The rebuilt mips came from Pillow's RGBA resize, which premultiplies by
+alpha, and land is alpha 0; mips are now a per-channel 2x2 mean.
+
+`scripts/paint_supertexture.py` (map x 220..440, y 120..220, 51 mip-0 tiles + 33 above): parchment
+found by colour near the void regions; the shadow undone by a local brightness gain (land and
+water each against their own reference); desert = push-pull colour from the painted land round
+it, fading to the painted Nafud's mean inland, plus fine detail splatted from painted desert;
+mountains (Hejaz / Asir / Yemen, Red Sea Hills, Hajar) as noisy bands at set distances from the
+Red Sea and the Gulf of Oman (east of Musandam, map x > 401), ridged with patches of the painted
+Zagros; water colour and alpha by distance from land, sampled from the painted Persian Gulf and
+tinted by the nearest painted water. Output `new_regions_map.pack` (vanilla stpd + 6.8 MB of
+appended tiles). The relief is flat: the terrain height source is not found yet.
