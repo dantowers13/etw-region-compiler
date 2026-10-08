@@ -31,7 +31,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent))
 
-from shapely.geometry import LineString, MultiPolygon, Point, Polygon
+import shapely
+from shapely.geometry import LinearRing, LineString, MultiPolygon, Point, Polygon
+from shapely.geometry.polygon import orient
+from shapely.strtree import STRtree
 from shapely.ops import unary_union
 
 from etwpc.compiler.mesh import NONE, Mesh, packed
@@ -87,11 +90,135 @@ SPLITS = {
     # the walkable valley between the Pyrenees mountain zones around Spain's Andorra slot
     "andorra": dict(parent="spain", child="andorra", child_side=(9.12, 303.26), region=[
         (6.0, 301.4), (12.6, 301.4), (12.6, 305.8), (6.0, 305.8)]),
+    # Batch 2, the Ottoman lands (approved 2026-10-08 on the review map): polygons in map
+    # coordinates, projected from c.1700 eyalet lines through the game's own city positions
+    # (out/split_planning_ottoman). Crete and Cyprus are island areas moved by add_region.py.
+    "albania": dict(parent="greece", child="albania", sub_areas="cover", child_side=(140.4, 293.6), region=[(130.00, 300.00), (148.00, 300.00), (148.00, 290.00), (146.20, 287.30), (144.50, 286.60), (130.00, 286.00)]),
+    "aleppo": dict(parent="syria", child="aleppo", sub_areas="cover", child_side=(277.1, 257.9), region=[(243.71, 249.24), (243.73, 252.27), (243.90, 254.48), (244.28, 257.31), (245.29, 263.21), (245.63, 266.28), (245.76, 269.92), (245.59, 275.59), (253.85, 275.43), (267.83, 275.51), (272.41, 275.39), (280.70, 275.00), (284.73, 274.96), (290.60, 275.25), (301.91, 276.31), (302.14, 270.77), (302.19, 267.19), (302.09, 263.42), (301.85, 259.44), (298.79, 256.08), (294.04, 250.62), (291.47, 250.24), (288.06, 249.97), (277.72, 249.43), (261.98, 248.86), (251.39, 249.20)]),
+    "macedonia": dict(parent="rumelia", child="macedonia", sub_areas="cover", child_side=(152.3, 297.6), region=[(140.00, 312.00), (167.30, 312.00), (167.30, 289.80), (169.50, 289.00), (177.00, 286.00), (177.00, 278.00), (140.00, 278.00)]),
+    # everything north of the Danube: the river areas of `all` plus seeds (Bucharest, Craiova)
+    "wallachia": dict(parent="bulgaria", child="wallachia", sub_areas="cover", child_side=(186.6, 317.2), river_areas=[94, 95, 98],
+                      seeds=[(186.6, 317.2), (169.5, 316.5)]),
+    "hudavendigar": dict(parent="anatolia", child="hudavendigar", sub_areas="cover", child_side=(206.8, 285.7), region=[(179.66, 280.39), (180.43, 284.51), (183.04, 296.48), (186.22, 296.09), (187.36, 296.07), (188.58, 296.16), (190.65, 296.62), (196.02, 298.33), (198.09, 298.90), (200.43, 299.36), (202.50, 299.55), (204.33, 299.53), (207.12, 299.32), (221.03, 297.71), (221.13, 292.76), (221.62, 284.01), (218.18, 278.87), (214.94, 278.90), (205.59, 278.78), (191.95, 279.05), (188.89, 279.22), (186.06, 279.49)]),
+    "aydin": dict(parent="anatolia", child="aydin", sub_areas="cover", child_side=(190.5, 272.6), region=[(180.94, 255.36), (179.65, 266.01), (179.19, 271.56), (179.14, 274.07), (179.18, 275.86), (179.36, 278.15), (179.66, 280.39), (186.06, 279.49), (188.89, 279.22), (191.95, 279.05), (205.59, 278.78), (214.94, 278.90), (218.18, 278.87), (217.72, 275.57), (216.95, 271.79), (213.16, 265.71), (211.30, 260.62), (209.36, 254.73), (202.54, 254.66), (197.25, 254.72)]),
+    "karaman": dict(parent="anatolia", child="karaman", sub_areas="cover", child_side=(230.7, 268.7), region=[(204.00, 248.00), (205.50, 257.50), (212.50, 271.50), (217.00, 272.60), (226.25, 275.75), (243.25, 274.50), (251.80, 275.60), (252.20, 274.30), (248.40, 265.20), (247.20, 261.00), (247.40, 248.00)]),
+    "adana": dict(parent="anatolia", child="adana", sub_areas="cover", child_side=(251.9, 262.9), region=[(237.94, 254.76), (238.35, 256.74), (239.00, 259.32), (240.56, 264.23), (245.13, 265.35), (249.38, 266.27), (262.66, 268.81), (271.13, 264.68), (271.79, 262.96), (272.24, 261.16), (272.37, 259.89), (272.31, 258.56), (272.01, 257.13), (271.22, 254.84), (254.94, 255.15)]),
+    # the Pontic coast, cut off from the interior by Anatolia's mountain sub-area (found by a
+    # point in it), closed at its west end by one cut
+    "trebizond": dict(parent="anatolia", child="trebizond", sub_areas="cover", child_side=(279.7, 290.0), barrier_points=[(278.79, 286.59)],
+                      seeds=[(279.7, 290.0)], cuts=[[(266.5, 297.0), (266.5, 285.5)]]),
+    "erzurum": dict(parent="anatolia", child="erzurum", sub_areas="cover", child_side=(293.2, 282.8), region=[(266.00, 306.00), (266.00, 290.00), (270.00, 283.00), (276.00, 276.00), (281.00, 270.00), (283.00, 258.00), (340.00, 258.00), (340.00, 306.00)]),
+    "mosul": dict(parent="mesopotamia", child="mosul", sub_areas="cover", child_side=(305.4, 256.6), region=[(289.35, 245.16), (290.08, 248.92), (290.41, 251.91), (290.49, 254.12), (290.45, 255.57), (290.13, 258.44), (289.52, 261.25), (288.65, 264.01), (287.26, 267.41), (285.33, 271.46), (290.02, 271.40), (294.34, 271.66), (298.96, 272.22), (306.78, 273.47), (309.64, 273.86), (312.57, 274.11), (315.54, 274.17), (318.52, 274.03), (322.27, 273.62), (339.18, 270.99), (339.32, 253.71), (339.52, 248.75), (339.84, 244.74), (333.88, 244.91), (328.62, 244.73), (324.14, 244.31), (316.17, 243.15), (313.72, 243.00), (311.49, 243.22), (306.92, 244.33), (304.54, 244.65), (302.33, 244.74), (295.01, 244.72), (292.46, 244.86)]),
+    "basra": dict(parent="mesopotamia", child="basra", sub_areas="cover", child_side=(343.6, 211.5), region=[(318.46, 197.31), (322.69, 211.94), (325.73, 221.80), (328.80, 223.59), (331.77, 225.18), (334.57, 226.54), (348.92, 223.20), (354.86, 222.00), (360.80, 220.92), (360.66, 209.83), (360.06, 193.18), (332.79, 196.19), (325.61, 196.83)]),
 }
 BATCH1 = ["brittany", "normandy", "provence", "lyonnais", "burgundy", "andorra"]
+BATCH2 = ['albania', 'aleppo', 'macedonia', 'wallachia', 'hudavendigar', 'aydin', 'karaman', 'adana', 'trebizond', 'erzurum', 'mosul', 'basra']
 
 
 # ─── regions.esf ──────────────────────────────────────────────────────────────
+
+SLIVER_W = 0.6             # land narrower than 2 x this between the drawn line and a river ...
+SLIVER_LEN = 0.8           # ... and at least this long goes to the region on its bank
+INNER_MARGIN = 0.3         # a cut keeps this far off a sub-area inside the main ring
+GRID = 1e-4                # overlay snap-rounding grid: vertices are float32 (~3e-5 apart at y 335),
+                           # and a river ring running along the coast leaves zero-width spikes
+
+
+def _areal(g):
+    """The polygonal part of an overlay result (snap-rounding can leave collapsed lines)."""
+    ps = [p for p in getattr(g, "geoms", [g]) if p.geom_type in ("Polygon", "MultiPolygon") and not p.is_empty]
+    return shapely.union_all(ps) if ps else Polygon()
+
+
+def plan_split(ring_poly, rivers: dict, near_rivers, side, sliver_w: float = SLIVER_W):
+    """The child's and the parent's land, with every river the border follows on its bank
+    (deep_dive 10.15). `rivers`: {area: polygon} of the river areas inside the parent's ring
+    (interior rivers); `near_rivers`: every river polygon around (border rivers too); `side`:
+    the child's side of the drawn line. A river area the side straddles becomes a border
+    river, in neither region (vanilla: a river on a border lies outside both rings); land
+    left between the drawn line and a river, narrower than 2 x SLIVER_W, goes to the region
+    on that bank (`sliver_w`: a spec's `snap` widens it where a line is drawn further off a
+    river, as along the Danube). Returns (child, parent, converted river areas)."""
+    conv = sorted(ai for ai, rp in rivers.items() if 1e-6 < side.intersection(rp).area / rp.area < 1 - 1e-6)
+    rv = shapely.union_all([rivers[ai] for ai in conv], grid_size=GRID) if conv else Polygon()
+    land = _areal(ring_poly.difference(rv, grid_size=GRID))
+    child = _areal(land.intersection(side, grid_size=GRID))
+    parent = _areal(land.difference(side, grid_size=GRID))
+    assert child.area > 1e-6 and parent.area > 1e-6,         f"the drawn side takes {'none' if child.area <= 1e-6 else 'all'} of the parent's main area"
+    wet = unary_union([near_rivers, rv])
+
+    def polys(g):
+        return sorted([p for p in getattr(g, "geoms", [g]) if p.geom_type == "Polygon" and p.area > 1e-9],
+                      key=lambda p: -p.area)
+
+    def slivers(x, other):
+        """Pieces of x cut off by a river, or thin strips of x between a river and `other`."""
+        parts = polys(x)
+        out = list(parts[1:])                          # cut off from x's main body
+        main = parts[0]
+        thin = main.difference(main.buffer(-sliver_w, join_style=2).buffer(sliver_w, join_style=2))
+        for t in polys(thin):
+            if (t.length / 2 >= SLIVER_LEN and t.distance(wet) < 1e-6
+                    and t.boundary.intersection(other.buffer(1e-6)).length > 0.5):
+                # a neck, not a sliver: moving it would cut x in two (Normandy's land around
+                # the end of the Seine joins its two banks)
+                rest = polys(main.difference(t))
+                if len(rest) > 1 and sum(r.area for r in rest[1:]) > t.area:
+                    continue
+                out.append(t)
+        return [s for s in out if s.boundary.intersection(other.buffer(1e-6)).length > 1e-3]
+
+    for _ in range(3):
+        to_p, to_c = slivers(child, parent), slivers(parent, child)
+        if not to_p and not to_c:
+            break
+        moved_c = _areal(shapely.union_all(to_p, grid_size=GRID)) if to_p else Polygon()
+        moved_p = _areal(shapely.union_all(to_c, grid_size=GRID)) if to_c else Polygon()
+        child = _areal(shapely.union_all([_areal(child.difference(moved_c, grid_size=GRID)), moved_p], grid_size=GRID))
+        parent = _areal(shapely.union_all([_areal(parent.difference(moved_p, grid_size=GRID)), moved_c], grid_size=GRID))
+    def one(g):
+        """A single polygon when g is one piece (snap-rounding may return a one-part
+        collection); holes of no area dropped."""
+        ps = polys(g)
+        if len(ps) == 1 or (ps and sum(p.area for p in ps[1:]) < 1e-6):
+            p = ps[0]
+            return Polygon(p.exterior, [h for h in p.interiors if Polygon(h).area > 1e-6])
+        return g
+    return one(child), one(parent), conv
+
+
+def river_side(land, rivers: list, seeds: list, gap: float = 1.5, cuts: list = ()):
+    """The child's side when its border is a river or another barrier (a spec's `river`:
+    area polygons, e.g. river areas of `all` or a mountain sub-area, and `seeds` inside the
+    child): the parent's land less the barriers, short land gaps between consecutive barrier
+    pieces bridged, extra `cuts` (polylines) added, keeping the pieces holding a seed. The
+    barriers must reach the parent's outline (or each other) for the side to close."""
+    from shapely.ops import nearest_points
+    rs = [g for r in rivers for g in getattr(r, "geoms", [r]) if g.geom_type == "Polygon"]
+    extra_cuts, cuts = list(cuts), []
+    for i in range(len(rs)):
+        for j in range(i + 1, len(rs)):
+            if 0 < rs[i].distance(rs[j]) < gap:
+                a, b = nearest_points(rs[i], rs[j])
+                cuts.append(LineString([a, b]).buffer(0.002))
+    cuts += [LineString(c).buffer(0.002) for c in extra_cuts]
+    rest = land.difference(unary_union(rs + cuts))
+    keep = [g for g in getattr(rest, "geoms", [rest]) if g.geom_type == "Polygon"
+            and any(g.covers(Point(s)) for s in seeds)]
+    assert keep, "no piece of the parent's land holds a seed"
+    return unary_union(keep).buffer(0.005, join_style=2)
+
+
+def sub_area_to_child(a, side, child, parent) -> bool:
+    """A sub-area (mountain zone beside the main ring) goes to the child when the drawn side
+    covers most of it, else to the nearer piece (a zone touching both is not a tie)."""
+    cov = a.intersection(side).area / a.area if a.area else 0.0
+    if cov > 0.5:
+        return True
+    if cov > 0.05:
+        return False
+    return child.distance(a) < parent.distance(a)
+
 
 def side_polygon(cut, inside_xy, far=400.0):
     """The half-plane-like polygon on `inside_xy`'s side of an open cut line."""
@@ -117,8 +244,10 @@ def split_regions_esf(root, spec) -> dict:
     ci = len(m.regs)
     riv = names.index(RIVER_REGION)
     p_areas = m.areas(pi)
-    main = p_areas[0]
-    assert main[2].value, "parent area 0 is not its main area"
+    # the mainland: the largest area (not always area 0: Anatolia's first areas are islands)
+    mi = max(range(len(p_areas)), key=lambda k: m.area_polygon(pi, k).area)
+    main = p_areas[mi]
+    assert main[2].value, f"parent area {mi} is not a main area"
     rings = [ol for ol in main[7].children if ol[0].value]
     banks = [ol for ol in main[7].children if not ol[0].value]
     assert len(rings) == 1, "main area must have exactly one closed ring"
@@ -143,122 +272,161 @@ def split_regions_esf(root, spec) -> dict:
         if not rp.is_empty and ring_poly.intersection(rp).area > 0.5 * rp.area:
             rivers[ai] = rp
 
+    # the child's side of the drawn line; a region polygon is grown a little, so an edge drawn
+    # along an earlier child's border lies inside that (already split off) territory
     if "region" in spec:
-        # a polygon on the map; an inland river it would cut goes wholly to the side that
-        # holds most of it (vanilla: no river polygon straddles two land regions)
-        # grown a little, so an edge drawn along an earlier child's border lies inside that
-        # (already split off) territory instead of on the border itself
         side = Polygon(spec["region"]).buffer(REGION_GROW, join_style=2)
-        crossed, to_child = [], []
-        for ai, rp in rivers.items():
-            f = side.intersection(rp).area / rp.area
-            if 1e-6 < f < 1 - 1e-6:
-                (to_child if f >= 0.5 else crossed).append(ai)
-        if to_child:
-            # wider than RIVER_MARGIN, so the corridor earlier splits left around the river
-            # (river plus margins, still the parent's) is taken whole, with no slivers
-            side = side.union(unary_union([rivers[ai] for ai in to_child]).buffer(RIVER_MARGIN + 0.1, join_style=2))
-        if crossed:
-            side = side.difference(unary_union([rivers[ai] for ai in crossed]).buffer(RIVER_MARGIN, join_style=2))
-        child = ring_poly.intersection(side)
+    elif "seeds" in spec:
+        # a border that is a river or a mountain zone: the parent's land less the barriers
+        barriers = [m.area_polygon(riv, a) for a in spec.get("river_areas", [])]
+        for pt in spec.get("barrier_points", []):
+            k = next(k for k in range(len(p_areas)) if m.area_polygon(pi, k).covers(Point(pt)))
+            barriers.append(m.area_polygon(pi, k))
+        side = river_side(ring_poly, barriers, spec["seeds"], cuts=spec.get("cuts", ()))
     else:
-        # a cut line; rivers it runs along stay with the parent (Occitania, tested in game)
-        cut = LineString(spec["cut"])
         side = side_polygon(spec["cut"], spec["child_side"])
-        child = ring_poly.intersection(side)
-        crossed = [ai for ai, rp in rivers.items() if rp.intersects(cut)]
-        if crossed:
-            child = child.difference(unary_union([rivers[ai] for ai in crossed]).buffer(RIVER_MARGIN, join_style=2))
-            side = side.difference(unary_union([rivers[ai] for ai in crossed]).buffer(RIVER_MARGIN, join_style=2))
-    parts = sorted([g for g in getattr(child, "geoms", [child]) if g.geom_type == "Polygon"], key=lambda g: -g.area)
-    child = parts[0]
-    assert not child.interiors, "child piece has a hole"
-    for ai, rp in rivers.items():
-        f = child.intersection(rp).area / rp.area
-        assert f < 1e-6 or f > 1 - 1e-6, f"river {ai} straddles the new border ({f:.2f})"
+    # a sub-area INSIDE the main ring (Syria's inland mountain zone: the main area has open
+    # outlines along its edge, as along an interior river) moves whole, and a ring edge may
+    # not double as such an outline: the line keeps INNER_MARGIN off it, on the side that
+    # covers most of it
+    for k in range(len(p_areas)):
+        a = m.area_polygon(pi, k)
+        if k == mi or a.is_empty or ring_poly.intersection(a).area <= 0.5 * a.area:
+            continue
+        cov = side.intersection(a).area / a.area
+        if 1e-6 < cov < 1 - 1e-6 or side.boundary.distance(a) < INNER_MARGIN:
+            grown = a.buffer(INNER_MARGIN, join_style=2)
+            side = side.union(grown) if cov >= 0.5 else side.difference(grown)
+            print(f"  inner sub-area {k} ({a.area:.1f}) kept whole on the {'child' if cov >= 0.5 else 'parent'}'s side")
+    near_r =unary_union([rp for rp in (m.area_polygon(riv, ai) for ai in range(len(m.areas(riv))))
+                          if not rp.is_empty and rp.intersects(ring_poly.buffer(1.0))])
+    child, parent, conv = plan_split(ring_poly, rivers, near_r, side, spec.get("snap", SLIVER_W))
+    for nm, g in (("child", child), ("parent", parent)):
+        parts = [(round(x.area, 6), tuple(round(c, 3) for c in x.representative_point().coords[0]),
+                  [round(Polygon(h).area, 6) for h in getattr(x, "interiors", [])]) for x in getattr(g, "geoms", [g])]
+        assert g.geom_type == "Polygon" and not g.interiors, \
+            f"{spec['child']}: the {nm} is not one piece without holes (a river right across it?): parts {parts}"
 
-    # walk the child ring: R vertices keep their index, everything else is new
-    rset = {(round(m.V(i)[0], 4), round(m.V(i)[1], 4)): i for i in R}
-    cc = list(child.exterior.coords)[:-1]
-    on_r = [rset.get((round(x, 4), round(y, 4))) for x, y in cc]
-    n = len(cc)
-    # rotate so the walk starts on R right after the new run
-    new_idx = [k for k in range(n) if on_r[k] is None]
-    assert new_idx, "cut did not create a border"
-    start = next(k for k in range(n) if on_r[k] is not None and on_r[(k - 1) % n] is None)
-    cc = cc[start:] + cc[:start]
-    on_r = on_r[start:] + on_r[:start]
-    first_new = next(k for k in range(n) if on_r[k] is None)
-    arc_child = on_r[:first_new]                               # R vertices on the child side
-    border = cc[first_new:]                                    # new points, ends on R-edges
-    if not all(v is None for v in on_r[first_new:]):
-        runs, k = [], 0
-        while k < n:
-            if on_r[k] is None:
-                j = k
-                while j < n and on_r[j] is None:
-                    j += 1
-                runs.append((tuple(round(v, 2) for v in cc[k]), tuple(round(v, 2) for v in cc[j - 1]), j - k))
-                k = j
-            else:
-                k += 1
-        raise AssertionError(f"{spec['child']}: the border meets the parent's coast more than twice; "
-                             f"new stretches (start, end, points): {runs}")
-    assert len(border) >= 2
+    # rings over three vertex sources: the parent's ring, the converted rivers' rings, new
+    # points. A new point on an existing edge (the coast where the line meets it, a river
+    # bank where a land border meets the water) is spliced into every outline with that edge.
+    conv_ols = [ol for ai in conv for ol in m.areas(riv)[ai][7].children]
+    known = {}
+    for v in R + [v for ol in conv_ols for v in ol[3].value]:
+        known.setdefault(m.V(v), v)
+    seg_ids = [(R[k], R[(k + 1) % len(R)]) for k in range(len(R))]
+    seg_ids += [e for ol in conv_ols for e in Mesh.edges(list(ol[3].value), ol[0].value)]
+    seg_tree = STRtree([LineString([m.V(a), m.V(b)]) for a, b in seg_ids])
+    splices: dict[frozenset, list] = {}               # undirected edge -> [new vertex]
+    new_vs: set[int] = set()
 
-    def edge_of(pt):
-        p = Point(pt)
-        best = min(range(len(R)), key=lambda k: LineString([m.V(R[k]), m.V(R[(k + 1) % len(R)])]).distance(p))
-        return best
+    def lookup(pt):
+        """The existing vertex within 1.5 GRID of pt (the nearest), else pt itself."""
+        pt = (float(pt[0]), float(pt[1]))
+        if pt in known:
+            return known[pt]
+        near = [(math.dist(q, pt), v) for q, v in known.items()
+                if abs(q[0] - pt[0]) < 1.5 * GRID and abs(q[1] - pt[1]) < 1.5 * GRID]
+        return min(near)[1] if near else pt
 
-    # the border's two end points lie on R edges (coast); insert them there
-    a_pt, b_pt = border[0], border[-1]
-    ka, kb = edge_of(a_pt), edge_of(b_pt)
-    # simplify the interior of the border (buffer arcs) but keep the ends
-    mid = LineString(border).simplify(0.05).coords if len(border) > 3 else border
-    mid = [tuple(p) for p in mid]
-    va = m.add_vertex(*a_pt)
-    vb = m.add_vertex(*b_pt)
-    inner = [m.add_vertex(*p) for p in mid[1:-1]]
-    border_v = [va] + inner + [vb]
+    def vid(key):
+        if isinstance(key, int):
+            return key
+        v = m.add_vertex(*key)
+        known[key] = known[m.V(v)] = v
+        new_vs.add(v)
+        P = Point(key)
+        on = [k for k in seg_tree.query(P.buffer(2 * GRID)) if seg_tree.geometries[k].distance(P) < 2 * GRID]
+        if on:
+            k = min(on, key=lambda k: seg_tree.geometries[k].distance(P))
+            splices.setdefault(frozenset(seg_ids[k]), []).append(v)
+        return v
 
-    # insert va / vb into every outline that has the coast edge (either direction)
-    def insert_on_edge(e, v):
-        hit = 0
-        for ri, ai, ol in m.outlines():
-            vs = list(ol[3].value)
-            for i, (x, y) in enumerate(Mesh.edges(vs, ol[0].value)):
-                if (x, y) == e or (y, x) == e:
-                    vs.insert(i + 1, v)
-                    m.set_outline(ol, vs)
-                    hit += 1
+    r_ccw = LinearRing([m.V(i) for i in R]).is_ccw
+
+    def ring_of(g):
+        g = orient(g, 1.0 if r_ccw else -1.0)
+        keys = []
+        for pt in list(g.exterior.coords)[:-1]:
+            k = lookup(pt)
+            if not keys or keys[-1] != k:
+                keys.append(k)
+        while len(keys) > 1 and keys[0] == keys[-1]:
+            keys.pop()
+        changed = True
+        while changed:                       # zero-width spikes: a -> b -> a
+            changed = False
+            for i in range(len(keys)):
+                if len(keys) > 3 and keys[i - 1] == keys[(i + 1) % len(keys)]:
+                    del keys[i]
+                    del keys[i % len(keys)]
+                    changed = True
                     break
-        return hit
-    ea = (R[ka], R[(ka + 1) % len(R)])
-    eb = (R[kb], R[(kb + 1) % len(R)])
-    ha, hb = insert_on_edge(ea, va), insert_on_edge(eb, vb)
-    R = list(rings[0][3].value)                                # parent ring, now with va, vb
+        return [vid(k) for k in keys]
 
-    # rings: the child keeps R's direction along its arc and closes along the border
-    ia, ib = R.index(va), R.index(vb)
-
-    def arc(i, j):                       # R from position i to j inclusive, cyclic
-        out = [R[i]]
-        while i != j:
-            i = (i + 1) % len(R)
-            out.append(R[i])
-        return out
-    arc1, arc2 = arc(ia, ib), arc(ib, ia)                     # va..vb and vb..va
-    probe = lambda a: Point(m.V(a[len(a) // 2]))
-    child_arc, parent_arc = (arc1, arc2) if child.buffer(1e-3).contains(probe(arc1)) else (arc2, arc1)
-    if child_arc is arc1:            # va .. vb, then back along the border vb -> va
-        child_ring = child_arc + border_v[-2:0:-1]
-        parent_ring = parent_arc + border_v[1:-1]
-    else:                            # vb .. va, then va -> vb
-        child_ring = child_arc + border_v[1:-1]
-        parent_ring = parent_arc + border_v[-2:0:-1]
-    for ring in (child_ring, parent_ring):
-        assert Polygon([m.V(i) for i in ring]).is_valid, "new ring is not a valid polygon"
+    old_edges = {frozenset(e) for _, _, ol in m.outlines() for e in Mesh.edges(list(ol[3].value), ol[0].value)}
+    child_ring, parent_ring = ring_of(child), ring_of(parent)
+    lost = set(R) - set(child_ring) - set(parent_ring)
+    assert not lost, (f"{spec['child']}: {len(lost)} vertices of the parent's ring are in neither new ring "
+                      f"(snapped together?): {[tuple(round(c, 4) for c in m.V(v)) for v in list(lost)[:4]]}")
+    # splice: walk every outline once, inserting along each spliced edge in order from its start
+    spliced = 0
+    for ri, ai, ol in m.outlines():
+        vs = list(ol[3].value)
+        if not any(frozenset(e) in splices for e in Mesh.edges(vs, ol[0].value)):
+            continue
+        out = []
+        for a_, b_ in Mesh.edges(vs, ol[0].value):
+            out.append(a_)
+            ins = splices.get(frozenset((a_, b_)))
+            if ins:
+                A = m.V(a_)
+                out += sorted(ins, key=lambda v: math.dist(A, m.V(v)))
+                spliced += 1
+        if not ol[0].value:
+            out.append(vs[-1])
+        m.set_outline(ol, out)
+    for nm, ring in (("child", child_ring), ("parent", parent_ring)):
+        rp_ = Polygon([m.V(i) for i in ring])
+        if not rp_.is_valid:
+            from shapely.validation import explain_validity
+            raise AssertionError(f"{spec['child']}: new {nm} ring is not a valid polygon: {explain_validity(rp_)}")
+    # the child's border with the parent: its ring away from the old parent ring (one stretch)
+    # the child's border with the parent: the run of its ring edges that are not the old
+    # ring's (or pieces of them, where a point was spliced in); one run, as a straight cut
+    # between two spliced points (Trebizond) has no new vertex at all
+    old_r = set()
+    for k in range(len(R)):
+        e = frozenset((R[k], R[(k + 1) % len(R)]))
+        if e in splices:
+            a_, b_ = R[k], R[(k + 1) % len(R)]
+            seq = [a_] + sorted(splices[e], key=lambda v: math.dist(m.V(a_), m.V(v))) + [b_]
+            old_r |= {frozenset(x) for x in zip(seq, seq[1:])}
+        else:
+            old_r.add(e)
+    n = len(child_ring)
+    new_e = [frozenset((child_ring[k], child_ring[(k + 1) % n])) not in old_r for k in range(n)]
+    starts = [k for k in range(n) if new_e[k] and not new_e[k - 1]]
+    assert len(starts) == 1, (f"{spec['child']}: the border meets the parent's ring {len(starts)} times; "
+                              f"stretches start at {[tuple(round(c, 2) for c in m.V(child_ring[k])) for k in starts]}")
+    k = starts[0]
+    border_v = [child_ring[k]]
+    while new_e[k]:
+        k = (k + 1) % n
+        border_v.append(child_ring[k])
+    river_edges = {frozenset(e) for ol in conv_ols for e in Mesh.edges(list(ol[3].value), ol[0].value)}
+    land_lines, cur = [], []
+    for a_, b_ in zip(border_v, border_v[1:]):
+        if frozenset((a_, b_)) in river_edges:
+            if len(cur) > 1:
+                land_lines.append(cur)
+            cur = []
+        else:
+            cur = (cur or [m.V(a_)]) + [m.V(b_)]
+    if len(cur) > 1:
+        land_lines.append(cur)
+    conv_banks = [ol for ol in banks if any(frozenset(e) in river_edges for e in Mesh.edges(list(ol[3].value), False))]
+    banks = [ol for ol in banks if ol not in conv_banks]
 
     # areas: the child's main area is a copy of the parent's
     c_main = deep_copy(main)
@@ -278,9 +446,17 @@ def split_regions_esf(root, spec) -> dict:
 
     # sub-areas (mountain zones beside the main ring, not inside it): to the nearer piece
     ppoly = Polygon([m.V(i) for i in parent_ring])
-    moved = [k for k in range(1, len(p_areas))
-             if cpoly.distance(m.area_polygon(pi, k)) < ppoly.distance(m.area_polygon(pi, k))]
-    keep = [0] + [k for k in range(1, len(p_areas)) if k not in moved]
+    # batch 2 decides by how much of a zone the drawn side covers (a zone touching both
+    # pieces is no tie: Trebizond's Pontic range, Karaman's Taurus); batch 1 keeps the
+    # nearer-piece rule its in-game build was tested with
+    if spec.get("sub_areas") == "cover":
+        moved = [k for k in range(len(p_areas))
+                 if k != mi and sub_area_to_child(m.area_polygon(pi, k), side, cpoly, ppoly)]
+    else:
+        moved = [k for k in range(len(p_areas))
+                 if k != mi and cpoly.distance(m.area_polygon(pi, k)) < ppoly.distance(m.area_polygon(pi, k))]
+    keep = [k for k in range(len(p_areas)) if k not in moved]
+    pm = keep.index(mi)                                       # the parent's main area, renumbered
     remap = {}
     for new_a, old_a in enumerate(keep):
         if new_a != old_a:
@@ -309,11 +485,11 @@ def split_regions_esf(root, spec) -> dict:
         vs = list(ol[3].value)
         mine = packed(ri, ai)
         stored = m.stored_runs(ol)
-        touches = ri in (pi, ci) or any(r[0] in old_parent for r in stored) or va in vs or vb in vs
+        touches = ri in (pi, ci) or any(r[0] in old_parent for r in stored) or bool(new_vs & set(vs))
         if not touches:
             continue
         if id(ol) in odd:
-            assert va not in vs and vb not in vs, "an outline the split cuts does not regenerate exactly"
+            assert not new_vs & set(vs), "an outline the split cuts does not regenerate exactly"
             edges = Mesh.edges(vs, ol[0].value)
             patched = []
             for nb, a0, a1 in stored:
@@ -332,12 +508,24 @@ def split_regions_esf(root, spec) -> dict:
         regen += 1
     print(f"regions.esf: {spec['parent']} area 0 cut; {spec['child']} appended at index {ci} with "
           f"{1 + len(moved)} areas (sub-areas {moved}); {spec['parent']} keeps {keep}; border {len(border_v)} "
-          f"vertices; coast edge inserts {ha}+{hb}; river banks {len(c_banks)} to child, {len(p_banks)} kept; "
-          f"rivers along the line {crossed}; connectivity regenerated on {regen} outlines, patched on {fallback}")
+          f"vertices ({sum(len(x) for x in land_lines)} on land); edges spliced {spliced}; river banks {len(c_banks)} "
+          f"to child, {len(p_banks)} kept, {len(conv_banks)} dropped; rivers made border rivers {conv}; "
+          f"connectivity regenerated on {regen} outlines, patched on {fallback}")
 
     # ── quadtree ──
-    border_edges = list(zip(border_v, border_v[1:]))
-    split_edges = {ea: [(ea[0], va), (va, ea[1])], eb: [(eb[0], vb), (vb, eb[1])]}
+    split_edges, pieces_set = {}, set()
+    for e, ins in splices.items():
+        a_, b_ = tuple(e)
+        seq = [a_] + sorted(ins, key=lambda v: math.dist(m.V(a_), m.V(v))) + [b_]
+        split_edges[(a_, b_)] = list(zip(seq, seq[1:]))
+        pieces_set |= {frozenset(x) for x in split_edges[(a_, b_)]}
+    border_edges, seen_e = [], set()
+    for ring in (child_ring, parent_ring):
+        for e in Mesh.edges(ring, True):
+            f = frozenset(e)
+            if f not in old_edges and f not in pieces_set and f not in seen_e:
+                border_edges.append(e)
+                seen_e.add(f)
     child_areas_poly = {0: cpoly} | {i: m.area_polygon(ci, i) for i in range(1, 1 + len(moved))}
     parent_areas_poly = {i: m.area_polygon(pi, i) for i in range(len(keep))}
 
@@ -345,8 +533,8 @@ def split_regions_esf(root, spec) -> dict:
         """New tag for a point that belonged to one of the parent's old areas."""
         if old_tag in remap:
             return remap[old_tag]
-        if old_tag == packed(pi, 0):
-            return packed(ci, 0) if cpoly.contains(Point(pt)) else packed(pi, 0)
+        if old_tag == packed(pi, mi):
+            return packed(ci, 0) if cpoly.contains(Point(pt)) else packed(pi, pm)
         return old_tag
 
     st = {"split": 0, "added": 0, "retagged": 0, "defaults": 0}
@@ -380,7 +568,7 @@ def split_regions_esf(root, spec) -> dict:
         d = cell.children[1].value
         if d in old_parent:
             nd = locate_old(cell.children[0].value, d)
-            if d == packed(pi, 0) or d in remap:
+            if d == packed(pi, mi) or d in remap:
                 if nd != d:
                     set_int(cell.children[1], nd)
                     st["defaults"] += 1
@@ -403,15 +591,21 @@ def split_regions_esf(root, spec) -> dict:
         return len(tri) // 3
 
     old_face = {k: tuple(old_areas[k][6].children[0].value) for k in range(len(old_areas))}
-    main_group = [k for k in range(len(old_areas)) if old_face[k] == old_face[0]]
+    main_group = [k for k in range(len(old_areas)) if old_face[k] == old_face[mi]]
     c_group = [0] + [moved.index(k) + 1 for k in main_group if k in moved]
     p_group = [keep.index(k) for k in main_group if k in keep]
-    c_rivers = [rp for ai, rp in rivers.items() if cpoly.contains(rp.representative_point())]
-    p_rivers = [rp for ai, rp in rivers.items() if ai not in crossed and not cpoly.contains(rp.representative_point())] \
-        + [rivers[ai] for ai in crossed]
+    c_rivers = [rp for ai, rp in rivers.items() if ai not in conv and cpoly.contains(rp.representative_point())]
+    p_rivers = [rp for ai, rp in rivers.items() if ai not in conv and not cpoly.contains(rp.representative_point())]
     tc = group_faces(ci, c_group, c_rivers)
     tp = group_faces(pi, p_group, p_rivers)
-    print(f"  faces: {spec['child']} areas {c_group} {tc} triangles; {spec['parent']} areas {p_group} {tp} triangles")
+    # the border rivers' own faces (their rings gained the spliced vertices); areas sharing
+    # one face list are triangulated together
+    r_face = {k: tuple(a[6].children[0].value) for k, a in enumerate(m.areas(riv))}
+    tr = 0
+    for ai in conv:
+        tr += group_faces(riv, [k for k in r_face if r_face[k] == r_face[ai]], [])
+    print(f"  faces: {spec['child']} areas {c_group} {tc} triangles; {spec['parent']} areas {p_group} {tp} triangles; "
+          f"border rivers {conv} {tr}")
     m.flush_vertices()
 
     # neighbours for the AI boundaries, with shared lengths
@@ -430,7 +624,10 @@ def split_regions_esf(root, spec) -> dict:
             "child_poly": cpoly, "border": [m.V(v) for v in border_v],
             "child_nb": neighbour_lengths(ci), "parent_nb": neighbour_lengths(pi),
             "child_bbox": cbox, "child_areas_poly": child_areas_poly, "parent_areas_poly": parent_areas_poly,
-            "side": side,
+            "side": side, "border_land": land_lines, "main_old": mi, "parent_main": pm,
+            # where pathfinding records count as the child's: its side of the line, less the
+            # parent's land (its bank of a river), plus the child's land
+            "child_half": unary_union([side.difference(ppoly), cpoly]),
             "class_ids": [a[5].value for a in m.areas(ci)]}
 
 
@@ -652,7 +849,8 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
     carry a startpos obstacle node are never re-cut (their startpos copies would go stale):
     there records are only relabelled whole, by where they lie, and the same relabel is
     applied to the copies. startpos node sequence ids are renumbered afterwards."""
-    from etwpc.compiler.coastal import CellView, commit_plan, self_test, check_cells, check_nodes, CELL, ring_of
+    from etwpc.compiler.coastal import (CellView, commit_plan, check_cells, check_nodes, CELL, ring_of,
+                                        restore_fields, stored_fields)
     from etwpc.compiler.footprint import AreaGrid, CellSpec
     from etwpc.compiler.obstacles import ObstacleSystem, part_polygon, store_polygons
     from etwpc.io.esf_types import BoundaryEntry
@@ -675,17 +873,11 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
     c_slot = n + 1
 
     # geometry: the strip and the child's half of the plane
-    border = LineString(info["border"])
-    if "region" in spec:
-        child_half = info["side"]
-    else:
-        cut = spec["cut"]
-        ext = list(border.coords)
-        if Point(ext[0]).distance(Point(cut[0])) > Point(ext[-1]).distance(Point(cut[0])):
-            ext.reverse()
-        ext = [cut[0]] + ext + [cut[-1]]
-        child_half = side_polygon(ext, spec["child_side"])
-    strip = border.buffer(STRIP_HALF)
+    child_half = info["child_half"]
+    # the strip runs only where the two regions' land meets: along a border river each
+    # region's land touches the river's own records, as vanilla's (deep_dive 10.15)
+    land = [LineString(x) for x in info["border_land"]]
+    strip = unary_union(land).buffer(STRIP_HALF) if land else Polygon()
     item = find(sp, "CAMPAIGN_PATHFINDER").children[0].children[PF_GRID]
     osys = ObstacleSystem(item)
     ob_cells = {(p >> 16, p & 0xFFFF) for p, _ in osys.pairs}
@@ -867,8 +1059,9 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
         for t, pid, p, orig in out:
             assert orig is not None or (p.is_valid and not p.interiors), f"cell {(r, c)}: bad polygon"
     around = sorted(set(plan) | ring_of(plan))
-    bad = self_test(view, [rc for rc in around if (rc[0], rc[1]) not in plan])
-    assert not bad, f"field rules do not reproduce cells beside the border: {bad[:3]}"
+    # cells beside the carve get their fields recomputed; vanilla's few cells the rules do
+    # not reproduce (r105 c95 by the Seine) keep their stored values
+    odd_cells = stored_fields(view, [rc for rc in around if (rc[0], rc[1]) not in plan])
     # The invariant check fails only on problems the carve adds: vanilla itself has
     # T-junctions (r105 c95 by the Seine, once under a saved unit zone).
     import re
@@ -880,6 +1073,8 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
         view.cache.clear()
         # the plan's original Rec objects came from the old cache: re-read nothing, they stay valid
     res = commit_plan(view, plan, extra)
+    odd_skipped = restore_fields(view, odd_cells)
+    assert not odd_skipped, f"odd vanilla cells beside the border changed shape: {odd_skipped}"
     view.cache.clear()
     bad = norm(check_cells(view, around) + check_nodes(view, carved)) - before_inv
     assert not bad, f"carved cells break a vanilla invariant: {sorted(bad)[:3]}"
@@ -1037,7 +1232,7 @@ def split_startpos(sp, spec, info, ids: IdPool) -> None:
     hl = {it[1].value: it for it in hl_node.children}
     p_h = list(p_cr.children[1].value)
     assert len(p_h) == len(info["keep"]) + len(info["moved"]), "HLCI count != area count"
-    new_main = clone_item(hl_node, hl[p_h[0]], ids.cai())
+    new_main = clone_item(hl_node, hl[p_h[info["main_old"]]], ids.cai())
     h = find(new_main, "CAI_REGION_HLCI")
     set_int(h.children[0], new_ai)
     set_list(h.children[2], [0])
@@ -1144,7 +1339,7 @@ def patrol(sp, spec, info, ai_of, new_ai, ids: IdPool) -> None:
     for entry in p_areas.children:
         spec_n = entry[0]
         a = spec_n.children[1].value
-        if a == 0:
+        if a == info["main_old"]:
             c_entry = deep_copy(entry)
             cs = c_entry[0]
             set_int(cs.children[0], new_ai)
@@ -1156,7 +1351,7 @@ def patrol(sp, spec, info, ai_of, new_ai, ids: IdPool) -> None:
             for pt in p_list.children:
                 node = pt[0] if isinstance(pt, list) else pt
                 x, y = node.children[0].value / FIXED, node.children[1].value / FIXED
-                (take_p if cpoly.buffer(0.8).contains(Point(x, y)) and not info["parent_areas_poly"][0].contains(Point(x, y)) else keep_p).append(pt)
+                (take_p if cpoly.buffer(0.8).contains(Point(x, y)) and not info["parent_areas_poly"][info["parent_main"]].contains(Point(x, y)) else keep_p).append(pt)
             p_list.children = keep_p
             c_list.children = [deep_copy(p) for p in take_p]
             moved_pts += len(take_p)
@@ -1169,7 +1364,7 @@ def patrol(sp, spec, info, ai_of, new_ai, ids: IdPool) -> None:
             proto = (keep_p or take_p)[0]
             for k in range(1, int(border.length // 3)):
                 q = border.interpolate(k * 3.0)
-                for lst, face, poly in ((c_list, p_ai, cpoly), (p_list, new_ai, info["parent_areas_poly"][0])):
+                for lst, face, poly in ((c_list, p_ai, cpoly), (p_list, new_ai, info["parent_areas_poly"][info["parent_main"]])):
                     off = None
                     for dx, dy in ((0.6, 0), (-0.6, 0), (0, 0.6), (0, -0.6)):
                         if poly.contains(Point(q.x + dx, q.y + dy)):
@@ -1201,7 +1396,7 @@ def patrol(sp, spec, info, ai_of, new_ai, ids: IdPool) -> None:
         for pt in find_all_points(find(by_id[bid], "CAI_BORDER_PATROL_ANALYSIS")):
             nb = list(pt.children[2].value)
             if p_ai in nb and near.contains(Point(pt.children[0].value / FIXED, pt.children[1].value / FIXED)) \
-                    and not info["parent_areas_poly"][0].buffer(0.5).contains(Point(pt.children[0].value / FIXED, pt.children[1].value / FIXED)):
+                    and not info["parent_areas_poly"][info["parent_main"]].buffer(0.5).contains(Point(pt.children[0].value / FIXED, pt.children[1].value / FIXED)):
                 set_list(pt.children[2], [new_ai if v == p_ai else v for v in nb])
                 retargeted += 1
 
@@ -1219,7 +1414,7 @@ def patrol(sp, spec, info, ai_of, new_ai, ids: IdPool) -> None:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--split", required=True, nargs="+", choices=sorted(SPLITS) + ["batch1"],
+    ap.add_argument("--split", required=True, nargs="+", choices=sorted(SPLITS) + ["batch1", "batch2"],
                     help="splits to apply in order (batch1 = brittany normandy provence lyonnais burgundy andorra)")
     ap.add_argument("--regions-esf", type=Path, required=True)
     ap.add_argument("--startpos-esf", type=Path, required=True)
@@ -1228,7 +1423,7 @@ def main():
     ap.add_argument("--copy-from", type=Path, help="copy pathfinding.esf (without S2) / *.pack from this build dir")
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args()
-    names = [x for n in a.split for x in (BATCH1 if n == "batch1" else [n])]
+    names = [x for n in a.split for x in {"batch1": BATCH1, "batch2": BATCH2}.get(n, [n])]
     a.out.mkdir(parents=True, exist_ok=True)
     rr = ESFReader(a.regions_esf)
     reg = rr.read_root()

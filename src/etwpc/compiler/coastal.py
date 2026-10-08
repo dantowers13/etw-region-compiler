@@ -201,6 +201,42 @@ def refresh_fields(view: CellView, cells, types=(0, 7)) -> int:
     return fixed
 
 
+def stored_fields(view: CellView, cells) -> dict:
+    """{cell: [(pass, unknown2) per record]} for header cells the rules do not reproduce
+    (vanilla's few odd cells), so a commit that recomputes them can put them back."""
+    out = {}
+    for r, c in cells:
+        recs = view.get(r, c)
+        if isinstance(recs, tuple):
+            continue
+        stored = [(q.be.passable_part, q.be.unknown2) for q in recs]
+        if stored != compute_fields(view, r, c):
+            out[(r, c)] = stored
+    return out
+
+
+def restore_fields(view: CellView, saved: dict) -> list:
+    """Write back fields saved by stored_fields; returns the cells whose record count
+    changed (left as recomputed)."""
+    g = view.g
+    view.cache.clear()
+    new_specs, skipped = {}, []
+    for (r, c), stored in saved.items():
+        recs = view.get(r, c)
+        if isinstance(recs, tuple) or len(recs) != len(stored):
+            skipped.append((r, c))
+            continue
+        bounds = []
+        for rec, (pas, u2) in zip(recs, stored):
+            rec.be.passable_part, rec.be.unknown2 = pas, u2
+            bounds.append(rec.be.to_packed())
+        new_specs[r * g.cols + c] = CellSpec(g.spec(r, c).hdr, bounds, None, None)
+    if new_specs:
+        g._apply(new_specs)
+    view.cache.clear()
+    return skipped
+
+
 def check_cells(view: CellView, cells) -> list[str]:
     """Vanilla invariants of header cells: valid counter-clockwise polygons that partition
     the cell, and every vertex on a cell edge shared with the neighbour across it."""
