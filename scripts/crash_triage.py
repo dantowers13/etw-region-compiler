@@ -53,6 +53,14 @@ KNOWN = {
                 "with no CAMPAIGN_TRADE_MANAGER TRADE_ROUTE; the node pair is at [esp+0x58]/[esp+0x5c] (Oct 2 "
                 "labrador-wilderness_canada, deep_dive 8.17; Oct 8 batch2 rumelia-hudavendigar across the "
                 "Bosphorus, deep_dive 10.17)",
+    0x00d96afe: "fast-fail 7 (abort) from _purecall (+0xd9ced6): the campaign AI (CAI do_cai_step; first seen on "
+                "Persia's turn in a Georgia campaign, Oct 10 also in other campaigns, ~turn 10) called a method on "
+                "a deleted object. +0x8a0800 per list element: elem+0x2c "
+                "yields a target (+0x507a70) passed to +0x824560, whose [arg]->[+0xc] is pure: the arg's vtable "
+                "+0xe5b564 is an abstract base (slots 1-5 _purecall). The live object it is compared against links "
+                "to an admiral (Oct 8 x2, Oct 9 x2, Oct 10 x2; 1.2-1.5 GB dumps, game hangs first)",
+    0x004f2c13: "read of a small bogus address (0x0002411e) through ecx (Oct 10, once, between two +0xd96afe "
+                "crashes; not analysed yet)",
     0x0064f66f: "AI region route step: region missing from the AI region-graph map (great_plains/new_mexico, whose "
                 "only land neighbours were dormant; Oct 1 new_regions_noobs; deep_dive 8.14)",
 }
