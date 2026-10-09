@@ -179,6 +179,28 @@ SPECS: dict[str, RegionSpec] = {s.name: s for s in [
         wealth=(200, 200), wealth_distribution=(44, 132, 176, 22, 110, 110, 110, 66),
         los_bbox=((243.75, 173.75), (412.5, 238.75)),
     ),
+    # Batch 3, Arabia (deep_dive 10.22): a child of the void `arabia` region, its cells opened
+    # by split_region.py (open_void_pathfinding); dormant with its own path id like the eight,
+    # so explicit positions and transplanted footprints. Owner Ottomans for the first test
+    # (the Sharifate of Mecca is to be a new faction); Jeddah a town until new ports exist.
+    RegionSpec(
+        name="hejaz", theatre_flag=2, pf_grid=2, theatre_name="europe", template="armenia",
+        region_display="Hejaz", settlement_key="settlement:hejaz:mecca", settlement_display="Mecca",
+        donor_settlement_key="",
+        slot_map={
+            "town:hejaz:medina": ("town:hejaz:medina", "Medina", "town"),
+            "town:hejaz:jeddah": ("town:hejaz:jeddah", "Jeddah", "town"),
+            "wheat:hejaz:khaybar": ("wheat:hejaz:khaybar", "Khaybar Oasis Farms", "wheat"),
+        },
+        positions={"capital": (285.0, 153.0), "town:hejaz:medina": (282.1, 174.5),
+                   "town:hejaz:jeddah": (279.8, 154.6), "wheat:hejaz:khaybar": (279.8, 182.7)},
+        owner_faction="ottomans", emergent_nation="ottoman_rebels", rebels_name="Hejazi Rebels",
+        culture="sc_mideast_islamic", population=(250000, 300000, 250000), colour=(176, 132, 64),
+        religion=(("rel_islamic", 1.0),),
+        resources=["desert", "med_coast", "camels", "north_africa", "africa_west_indies", "galleys",
+                   "colonial_euro_factions", "global", "middle_east", "middle_east_and_europe"],
+        wealth=(200, 200), wealth_distribution=(44, 132, 176, 22, 110, 110, 110, 66),
+    ),
     RegionSpec(
         name="wilderness_khiva", theatre_flag=2, pf_grid=2, theatre_name="europe", template="persia",
         region_display="Khwarezm", settlement_key="settlement:wilderness_khiva:khiva", settlement_display="Khiva",
