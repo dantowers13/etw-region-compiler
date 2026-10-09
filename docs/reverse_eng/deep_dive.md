@@ -2170,3 +2170,89 @@ mountains, at least 0.45 apart, with a 0.3 olive tint on the ground under them. 
 with the same trees file is written beside the map pack, so it doesn't matter which pack wins;
 rerun the painter after any S3 rebuild or the palms are lost. In game the darker half of the Red
 Sea is the fog of war, not the texture.
+
+### 10.22 The whole Sahara, painted in strips (2026-10-09)
+
+`paint_supertexture.py` now covers map x -200..460, y 120..240 (16,896 x 3,072 mip-0 px, ~52 M):
+the Atlantic off Mauritania to the Gulf of Oman. Vanilla's torn edge reaches y ~227 south of
+Algeria and Tunisia, hence the taller canvas. Painting it in one go would need ~11 GB (the old
+Arabia canvas, 22 M px, peaked at 4.6 GB, ~240 B/px), so:
+
+* **global fields on the heightmap grid** (1/64 of the pixels): land / void / river masks, the
+  over-land "near the void" distances, sand seas and mountains (bands + Saharan massifs), the
+  desert colour membrane (push-pull of the painted land, fading over 15 units to the painted
+  desert along the edge at that longitude, half gravel), water ramps (Persian Gulf east of x 0,
+  Atlantic west of it) and the water tint, palm placement and the heights;
+* **strips at full resolution**: CHUNK 6 tiles + HALO 1 each side, only the core written.
+  `Noise` and `Splat` are laid out in canvas coordinates (each splat patch seeded by its grid
+  cell, contrast calibrated once) so neighbouring strips agree; no seam at strip edges.
+
+Peak 3.2 GB, ~5 min. `DEBUG = {"only": [strip c0s]}` in the script collects a strip's masks.
+
+Content: Saharan massifs (Ahaggar, Tassili, Tibesti, Uweinat, Gilf Kebir, the Mauritanian
+Adrar), sand seas (the Grand Ergs, Ubari, Murzuq, Great Sand Sea, Calanshio, Rebiana, Erg Chech,
+Iguidi, Majabat, Ouarane, Akchar), broad hammada patches, ~20 Saharan oases with palms (211
+clusters in all). Africa's places come from a thin-plate spline through nine anchors (three
+Canaries, Cape Blanc, southern Tunisia's tip, the Gulf of Sidra, Suez, Cairo, Wadi Halfa).
+The Atlantic is painted to the frame; a new torn edge at x -177.5 keeps the panel's margin.
+
+Gotchas found on the way:
+- scipy's `distance_transform_edt` of an all-True mask measures from outside the top-left
+  corner instead of returning infinity (`edt()` now returns inf);
+- nearest-neighbour noise upsampling showed as rectangles (bilinear now);
+- Morocco's parchment is cream (chroma 60-75) and the edge's shadow lies on the parchment side
+  there: the light-grey test missed ~6 units, so the edge was measured too far south and its
+  shadow carried in as land colour. `grow_parchment` grows through light pixels up to the dark
+  shadow band, **only west of x 60**: further east painted land (the Nile valley, Cyrenaica)
+  fades into parchment with no dark band and the growth swallowed it;
+- the light-grey seed keeps 6 units over land from the void: at 15 it took Egypt's pale painted
+  desert, Nile and all, for parchment. Everything else (shadow fix, feather, cream growth) uses 15;
+- regions carved from void land (Hejaz, 10.23) must count as void for painting, or their coast
+  far from the remaining void stays parchment (`VOID_LAND`).
+
+### 10.23 Opening void land: Hejaz (2026-10-10, works in game)
+
+There is no `map_regions.tga` in ETW. Void `arabia` (6 areas) has area flag `[2]` False (True on
+every area of a real or dormant region), an AI stub (6 HLCIs, no boundaries, empty patrol
+belief) and **no path id**; its cells are impassable: interior runs carry path id 1023, word 2
+and 0xFF samples in the 8-byte header (`57ff57ffff57ff57`), coastal cells hold a type-2
+polygon of path id 1023 where a region's land would be type 0. Passable desert next door
+(Syria, Egypt, Jawf) is `5757575757575757`, word `0xFF110110`. Jawf's passable land covers the
+whole Tabuk / Tayma band, up to Hejaz.
+
+`split_region.py` `void_parent` specs (first: `hejaz`): `avoid={region: gap}` keeps a void gap
+(Jawf, 1.5 units: no land link yet), `min_y` clips to the Europe grid (y 140). S1 accepts a
+void main area and sets the child's areas active; startpos clones the child's sea edges from a
+neighbour's (Red Sea - Egypt) and makes no parent edge; patrol gets a point every ~3 units of
+coast facing the sea. S2 `open_void_pathfinding`: a new path id (sea / border ids +1, i2 / order
+/ counts, startpos flag copied from Jawf's); every whole cell whose land is only the child's is
+opened (samples 0xFF -> the cell's terrain code, word 2 -> 0xFF110110, type-2/1023 -> type 0 +
+`refresh_fields`); cells cut by the edge stay impassable like vanilla's fringe, so no record is
+reshaped and node ids are unchanged. Hejaz: 229 interior + 23 coastal cells, 56 left on the edge.
+S3: a RegionSpec like the dormant eight (explicit positions, transplanted footprints), template
+armenia, owner Ottomans for now; Mecca, Medina and Jeddah towns (no new port yet), Khaybar
+wheat. The transport graph links Hejaz to a sea waypoint, like Crete.
+
+Build: `split_region.py --split hejaz` on `batch2b_split` -> `batch3_split` -> S3 `--footprints
+--obstacles none` -> `batch3_s3` -> `unlock_factions.py` -> `batch3_s3_unlocked`; the painter
+with `--region-pack` (palms keep 1.6 units off every settlement and slot) -> `out/batch3_deploy`.
+
+### 10.24 Next session (from the user, 2026-10-10)
+
+1. **The ~turn 10 crash.** `Empire.exe+0xd96afe` (`_purecall`, the campaign AI calling a method
+   on a deleted object; see `crash_triage.py`) is now 6 dumps across campaigns (Oct 8-10), and
+   was seen before Hejaz existed, so batch 2 (or earlier) is the first suspect. Plan: a save a
+   turn before the crash; bisect builds (no batch 2 / no Basra-Mosul / vanilla); identify the
+   deleted object's class (vtable +0xe5b564 base, the live one +0xe5b5d0 links to an admiral:
+   fleets?). A second new site, +0x4f2c13 (read of 0x2411e), crashed once in between.
+2. **New factions**: Sharifate of Mecca (Hejaz), Banu Khalid (al-Hasa, with the Qatar coast),
+   Ya'rubid Imamate (Oman), **Emirate of Diriyah (Najd)**. Needs new-faction tooling: cloned
+   startpos FACTION (AI, diplomacy, capital), DB factions / flags / units, localisation,
+   selectable entries. Then build Najd, al-Hasa and Oman (Rub' al Khali stays void; Bahrain has
+   no land polygon).
+3. **Balance the Ottomans**: batch 2 and Hejaz gave them 15 more regions.
+4. **Tighten borders**: many region borders need tightening (which ones: get the user's list or
+   screenshots first).
+5. **A Red Sea sea-travel zone to open ports there** (Jeddah first). New ports need
+   `sea_grids.esf` / `trade_routes.esf` entries, not decoded for this yet.
+6. Link Hejaz to Jawf by land (a border strip in the 1.5-unit gap; Jawf's land reaches it).
