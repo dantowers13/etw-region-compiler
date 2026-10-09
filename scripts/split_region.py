@@ -109,7 +109,15 @@ SPLITS = {
                       seeds=[(279.7, 290.0)], cuts=[[(266.5, 297.0), (266.5, 285.5)]]),
     "erzurum": dict(parent="anatolia", child="erzurum", sub_areas="cover", child_side=(293.2, 282.8), region=[(266.00, 306.00), (266.00, 290.00), (270.00, 283.00), (276.00, 276.00), (281.00, 270.00), (283.00, 258.00), (340.00, 258.00), (340.00, 306.00)]),
     "mosul": dict(parent="mesopotamia", child="mosul", sub_areas="cover", child_side=(305.4, 256.6), region=[(289.35, 245.16), (290.08, 248.92), (290.41, 251.91), (290.49, 254.12), (290.45, 255.57), (290.13, 258.44), (289.52, 261.25), (288.65, 264.01), (287.26, 267.41), (285.33, 271.46), (290.02, 271.40), (294.34, 271.66), (298.96, 272.22), (306.78, 273.47), (309.64, 273.86), (312.57, 274.11), (315.54, 274.17), (318.52, 274.03), (322.27, 273.62), (339.18, 270.99), (339.32, 253.71), (339.52, 248.75), (339.84, 244.74), (333.88, 244.91), (328.62, 244.73), (324.14, 244.31), (316.17, 243.15), (313.72, 243.00), (311.49, 243.22), (306.92, 244.33), (304.54, 244.65), (302.33, 244.74), (295.01, 244.72), (292.46, 244.86)]),
-    "basra": dict(parent="mesopotamia", child="basra", sub_areas="cover", child_side=(343.6, 211.5), region=[(318.46, 197.31), (322.69, 211.94), (325.73, 221.80), (328.80, 223.59), (331.77, 225.18), (334.57, 226.54), (348.92, 223.20), (354.86, 222.00), (360.80, 220.92), (360.66, 209.83), (360.06, 193.18), (332.79, 196.19), (325.61, 196.83)]),
+    # Batch 3, Arabia (deep_dive 10.22): children of the VOID region `arabia`, which has no
+    # path id, no AI edges and impassable cells; S2 opens the child's cells instead of
+    # splitting a parent's (open_void_pathfinding). The Rub' al Khali stays void. First
+    # test keeps a void gap round Jawf (no land link yet) and stops at the Europe grid's
+    # southern edge (y 140; Mecca 153, Jeddah 154).
+    "hejaz": dict(parent="arabia", child="hejaz", child_side=(283.0, 165.0), void_parent=True,
+                  avoid={"wilderness_arabia": 1.5}, min_y=140.6, theatre=34, region=[
+        (250, 200), (281, 200), (289, 190), (292, 176), (295, 162), (298, 150), (300, 138), (250, 138)]),
+    "basra": dict(parent="mesopotamia", child="basra", sub_areas="cover", child_side=(343.6, 211.5),region=[(318.46, 197.31), (322.69, 211.94), (325.73, 221.80), (328.80, 223.59), (331.77, 225.18), (334.57, 226.54), (348.92, 223.20), (354.86, 222.00), (360.80, 220.92), (360.66, 209.83), (360.06, 193.18), (332.79, 196.19), (325.61, 196.83)]),
 }
 BATCH1 = ["brittany", "normandy", "provence", "lyonnais", "burgundy", "andorra"]
 BATCH2 = ['albania', 'aleppo', 'macedonia', 'wallachia', 'hudavendigar', 'aydin', 'karaman', 'adana', 'trebizond', 'erzurum', 'mosul', 'basra']
@@ -247,7 +255,8 @@ def split_regions_esf(root, spec) -> dict:
     # the mainland: the largest area (not always area 0: Anatolia's first areas are islands)
     mi = max(range(len(p_areas)), key=lambda k: m.area_polygon(pi, k).area)
     main = p_areas[mi]
-    assert main[2].value, f"parent area {mi} is not a main area"
+    # area [2]: True on every area of a real or dormant region, False on a void one's
+    assert main[2].value or spec.get("void_parent"), f"parent area {mi} is not a main area"
     rings = [ol for ol in main[7].children if ol[0].value]
     banks = [ol for ol in main[7].children if not ol[0].value]
     assert len(rings) == 1, "main area must have exactly one closed ring"
@@ -285,6 +294,12 @@ def split_regions_esf(root, spec) -> dict:
         side = river_side(ring_poly, barriers, spec["seeds"], cuts=spec.get("cuts", ()))
     else:
         side = side_polygon(spec["cut"], spec["child_side"])
+    # keep a void gap round regions the child must not touch yet (no land link to them)
+    for nm, gap in spec.get("avoid", {}).items():
+        ri_ = names.index(nm)
+        side = side.difference(unary_union([m.area_polygon(ri_, k) for k in range(len(m.areas(ri_)))]).buffer(gap))
+    if "min_y" in spec:                                # stay inside the pathfinding grid
+        side = side.difference(Polygon([(-1e4, -1e4), (1e4, -1e4), (1e4, spec["min_y"]), (-1e4, spec["min_y"])]))
     # a sub-area INSIDE the main ring (Syria's inland mountain zone: the main area has open
     # outlines along its edge, as along an interior river) moves whole, and a ring edge may
     # not double as such an outline: the line keeps INNER_MARGIN off it, on the side that
@@ -472,6 +487,9 @@ def split_regions_esf(root, spec) -> dict:
     old_areas = list(p_areas)
     area_node = lambda r: next(c for c in r if isinstance(c, ESFNode) and c.tag == "areas")
     area_node(rec).children = [c_main] + [old_areas[k] for k in moved]
+    if spec.get("void_parent"):                    # the child's areas are a real region's
+        for a in area_node(rec).children:
+            set_bool(a[2], True)
     area_node(m.regs[pi]).children = [old_areas[k] for k in keep]
     m.regs.append(rec)
     m.set_region_bbox(pi)
@@ -629,6 +647,7 @@ def split_regions_esf(root, spec) -> dict:
             # parent's land (its bank of a river), plus the child's land
             "child_half": unary_union([side.difference(ppoly), cpoly]),
             "class_ids": [a[5].value for a in m.areas(ci)],
+            "kinds": [m.regs[i][1].value for i in range(len(m.regs))],
             "region_poly": lambda ri: unary_union([m.area_polygon(ri, k) for k in range(len(m.areas(ri)))])}
 
 
@@ -1195,6 +1214,145 @@ def split_pathfinding(pf_root, sp, spec, info) -> None:
 
 # ─── startpos ─────────────────────────────────────────────────────────────────
 
+PASSABLE_WORD = 0xFF110110    # interior-cell word of vanilla's passable desert (Syria, Egypt, Jawf's pocket)
+IMPASSABLE_SAMPLE = 0xFF      # a blocked sample in the 8-byte cell header
+
+
+def open_void_pathfinding(pf_root, sp, spec, info) -> None:
+    """S2 for a child of a VOID parent (deep_dive 10.22). Void land has no path id and vanilla
+    made Arabia's impassable: interior cells carry path id 1023, word 2 and 0xFF samples in
+    their 8-byte header (passable desert: 0x57... and word 0xFF110110), coastal cells a type-2
+    polygon of path id 1023 where a region's land would be type 0. Every cell whose land lies
+    wholly in the child (no other land, not the parent's remainder) is opened: interior cells
+    take a new path id, passable samples and word; type-2/1023 records become type-0 land of
+    that id (fields recomputed). Cells cut by the child's edge stay impassable, like vanilla's
+    own fringe, so no record is reshaped and the cell sequence (startpos node ids) is kept.
+    No border strip: the child touches no other land region yet (spec `avoid`)."""
+    from etwpc.compiler.coastal import CellView, refresh_fields
+    from etwpc.compiler.footprint import AreaGrid, CellSpec
+    from etwpc.compiler.obstacles import ObstacleSystem
+    from etwpc.io.esf_types import BoundaryEntry
+    from shapely.geometry import box
+    from reactivate_region import renumber_startpos_nodes
+
+    g = AreaGrid(pf_root.children[0].children[PF_GRID])
+    n = len(g.i2)
+    pi, ci = info["pi"], info["ci"]
+    cpid = n
+    item = find(sp, "CAMPAIGN_PATHFINDER").children[0].children[PF_GRID]
+    osys = ObstacleSystem(item)
+    node_cells = {(p >> 16, p & 0xFFFF) for p, _ in osys.pairs}
+
+    # 1. shift sea and border ids (cells, records, startpos copies), as split_pathfinding
+    shifted = lambda p: p + 1 if n <= p < PF_MARKERS else p
+    for it in g.items:
+        if it.pid is not None:
+            it.pid = shifted(it.pid)
+        nb = []
+        for a, b in it.bounds:
+            be = BoundaryEntry.from_packed(a, b)
+            be.path_id = shifted(be.path_id)
+            nb.append(be.to_packed())
+        it.bounds = nb
+    for e in osys.entries:
+        pairs = list(e.pairs)
+        for i in range(0, len(pairs), 2):
+            be = BoundaryEntry.from_packed(pairs[i], pairs[i + 1])
+            if be.path_id != shifted(be.path_id):
+                be.path_id = shifted(be.path_id)
+                pairs[i], pairs[i + 1] = be.to_packed()
+        e.pairs = pairs
+
+    # 2. open the cells whose land is all the child's
+    child = info["child_poly"]
+    x0, y0, x1, y1 = child.bounds
+    others = []                                    # every other land (or river) region near the child
+    for ri in range(len(info["names"])):
+        if ri == ci or info["kinds"][ri] == "sea":
+            continue
+        try:
+            rp = info["region_poly"](ri)
+        except Exception:
+            continue
+        if not rp.is_empty and rp.intersects(box(x0 - 4, y0 - 4, x1 + 4, y1 + 4)):
+            others.append(rp)
+    others = unary_union(others)
+
+    def open_header(h: bytes) -> bytes:
+        keep = [b for b in h if b != IMPASSABLE_SAMPLE]
+        fill = max(set(keep), key=keep.count) if keep else 0x57
+        return bytes(fill if b == IMPASSABLE_SAMPLE else b for b in h)
+
+    view = CellView(g)
+    specs, header_cells = {}, []
+    st = dict(run=0, header=0, records=0, cut=0, other_land=0, obstacle=0, odd=0)
+    r0, c0 = g.cell_of(x0, y0)
+    r1, c1 = g.cell_of(x1, y1)
+    for r in range(max(0, r0), min(g.rows, r1 + 1)):
+        for c in range(max(0, c0), min(g.cols, c1 + 1)):
+            ox, oy = g.ox + c * g.cs, g.oy + r * g.cs
+            cell = box(ox, oy, ox + g.cs, oy + g.cs)
+            if cell.intersection(child).area < 1e-6:
+                continue
+            if cell.intersection(others).area > 1e-6:
+                st["cut" if cell.intersection(info["region_poly"](pi)).area > 1e-6 else "other_land"] += 1
+                continue
+            if (r, c) in node_cells:
+                st["obstacle"] += 1
+                continue
+            k = r * g.cols + c
+            sp_ = g.spec(r, c)
+            recs = view.get(r, c)
+            if isinstance(recs, tuple):            # interior run / zero-record header cell
+                if sp_.pid != 1023:
+                    continue                       # sea, or land some other region already holds
+                specs[k] = CellSpec(open_header(sp_.hdr), [], PASSABLE_WORD if sp_.word == 2 else sp_.word, cpid)
+                st["run"] += 1
+                continue
+            if any(q.t not in (1, 2) or (q.t == 2 and q.be.path_id != 1023) for q in recs):
+                st["odd"] += 1                     # anything but sea and the impassable polygon
+                continue
+            bounds = []
+            for q in recs:
+                if q.t == 2:
+                    q.be.path_type, q.be.path_id = 0, cpid
+                    st["records"] += 1
+                bounds.append(q.be.to_packed())
+            specs[k] = CellSpec(open_header(sp_.hdr), bounds, None, None)
+            header_cells.append((r, c))
+            st["header"] += 1
+    g._apply(specs)
+    view = CellView(g)
+    fixed = refresh_fields(view, header_cells, types=(0,))
+
+    # 3. tables: i2 / order / counts (no border group: the child touches no land region)
+    ch = g.gd.children
+    u2 = list(ch[11].value)
+    order, tail = u2[:n], u2[n:]
+    g.i2.append(ci)
+    set_list(ch[10], g.i2)
+    for k in (8, 9):
+        ch[k].value, ch[k].raw = n + 1, b""
+    order.append(n + 1)
+    set_list(ch[11], order + tail)
+    g.order = order
+    assert g.region_of(cpid) == ci
+    g.serialize()
+
+    # 4. startpos: the child's per-pid flag (a land region's: Jawf's), node sequence ids
+    flags = next(c for c in item if isinstance(c, ESFPrimitive) and c.type_tag == 0x41)
+    fl = list(flags.value)
+    land_pid = g.pid_of(info["names"].index("wilderness_arabia"))
+    fl.insert(cpid, fl[land_pid])
+    flags.value, flags.raw = fl, b""
+    renum = renumber_startpos_nodes(sp, PF_GRID, g)
+    print(f"pathfinding grid {PF_GRID}: {spec['child']} path id {cpid}; sea {n}->{n + 1}, border ids +1; opened "
+          f"{st['run']} interior and {st['header']} coastal cells ({st['records']} impassable polygons made land, "
+          f"{fixed} fields recomputed); left impassable: {st['cut']} cut by the edge, {st['other_land']} by other "
+          f"land, {st['obstacle']} with obstacle nodes, {st['odd']} other records; startpos flags {len(fl)}, node "
+          f"ids renumbered {renum}")
+
+
 def clone_item(container, proto_item, new_id):
     it = deep_copy(proto_item)
     set_int(it[1], new_id)
@@ -1283,6 +1441,28 @@ def split_startpos(sp, spec, info, ids: IdPool) -> None:
             set_list(nb_cr.children[7], list(nb_cr.children[7].value) + [nb_it[1].value])
             set_bool(nb_cr.children[8], True)
             cloned.append(info["names"][oi])
+    if spec.get("void_parent"):
+        # a void parent has no AI edges to hand over or clone (void regions have none): each
+        # of the child's neighbours (the Red Sea) gets an edge cloned from one of its own
+        for oi, length in sorted(info["child_nb"].items()):
+            if oi >= len(ai_of) or oi == pi:
+                continue
+            o_ai = ai_of[oi]
+            proto = next((it for it in b_node.children
+                          if o_ai in (find(it, "CAI_REGION_BOUNDARY").children[0].value,
+                                      find(it, "CAI_REGION_BOUNDARY").children[1].value)), None)
+            if proto is None:
+                continue
+            nb_it = clone_item(b_node, proto, ids.cai())
+            bb = find(nb_it, "CAI_REGION_BOUNDARY")
+            set_int(bb.children[1 if bb.children[0].value == o_ai else 0], new_ai)
+            bb.children[2].value, bb.children[2].raw = float(length), b""
+            set_int(bb.children[3], 0)
+            c_b.append(nb_it[1].value)
+            nb_cr = find(items[oi], "CAI_REGION")
+            set_list(nb_cr.children[7], list(nb_cr.children[7].value) + [nb_it[1].value])
+            set_bool(nb_cr.children[8], True)
+            cloned.append(info["names"][oi])
     # Strait crossings ([3] = 1, length 1.0: vanilla's Bosphorus, Oresund, ...) share no
     # outline, so the loop above never sees them. The engine links whichever region now
     # holds the shore: Hudavendigar took Anatolia's, and batch2_s3_unlocked crashed on load
@@ -1298,16 +1478,18 @@ def split_startpos(sp, spec, info, ids: IdPool) -> None:
             p_b.remove(bid)
             c_b.append(bid)
             crossed.append(info["names"][ai_of.index(other_of[bid])])
-    # the new parent-child edge
-    pc = clone_item(b_node, bmap[p_b[0]], ids.cai())
-    bb = find(pc, "CAI_REGION_BOUNDARY")
-    set_int(bb.children[0], p_ai)
-    set_int(bb.children[1], new_ai)
-    blen = LineString(info["border"]).length
-    bb.children[2].value, bb.children[2].raw = float(blen), b""
-    set_int(bb.children[3], 0)
-    p_b.append(pc[1].value)
-    c_b.append(pc[1].value)
+    # the new parent-child edge (none with a void parent)
+    blen, pc_id = LineString(info["border"]).length, None
+    if not spec.get("void_parent"):
+        pc = clone_item(b_node, bmap[p_b[0]], ids.cai())
+        bb = find(pc, "CAI_REGION_BOUNDARY")
+        set_int(bb.children[0], p_ai)
+        set_int(bb.children[1], new_ai)
+        bb.children[2].value, bb.children[2].raw = float(blen), b""
+        set_int(bb.children[3], 0)
+        pc_id = pc[1].value
+        p_b.append(pc_id)
+        c_b.append(pc_id)
     set_list(p_cr.children[7], p_b)
     set_list(cr.children[7], c_b)
     set_bool(cr.children[8], True)
@@ -1321,7 +1503,7 @@ def split_startpos(sp, spec, info, ids: IdPool) -> None:
             set_list(th.children[3], list(th.children[3].value) + [new_ai])
     print(f"startpos: CAI_WORLD_REGIONS[{ci}] {spec['child']} ai {new_ai}; HLCIs {c_h}; boundaries handed over "
           f"{handed}, cloned {cloned}, strait crossings handed over {crossed}, new {spec['parent']}-{spec['child']} "
-          f"edge {pc[1].value} length {blen:.1f}")
+          f"edge {pc_id} length {blen:.1f}")
 
 
 def patrol(sp, spec, info, ai_of, new_ai, ids: IdPool) -> None:
@@ -1417,6 +1599,44 @@ def patrol(sp, spec, info, ai_of, new_ai, ids: IdPool) -> None:
                 set_list(pt.children[2], [new_ai if v == p_ai else v for v in nb])
                 retargeted += 1
 
+    coast_pts = 0
+    if spec.get("void_parent") and not c_areas.children:
+        # the void parent has no patrol areas (nor the dormant template): the child gets one
+        # for its main area, a point ~every 3 units of its edge facing the region across
+        # (the Red Sea), set 0.6 inside; edges facing the void get none
+        proto_entry = next(e for b_ in region_bel for e in areas_of(b_).children
+                           if next(n for n in e[0].children if isinstance(n, ESFNode)).children)
+        c_entry = deep_copy(proto_entry)
+        cs = c_entry[0]
+        set_int(cs.children[0], new_ai)
+        set_int(cs.children[1], 0)
+        prims = [c for c in cs.children if isinstance(c, ESFPrimitive)]
+        set_int(prims[2], int(round(spec["child_side"][0] * FIXED)))
+        set_int(prims[3], int(round(spec["child_side"][1] * FIXED)))
+        c_list = next(n for n in cs.children if isinstance(n, ESFNode))
+        proto = c_list.children[0]
+        c_list.children = []
+        nbs = [(ai_of[oi], info["region_poly"](oi)) for oi in info["child_nb"] if oi < len(ai_of) and oi != pi]
+        ring = cpoly.exterior
+        for k in range(int(ring.length // 3)):
+            q = ring.interpolate(k * 3.0)
+            near = [(poly.distance(q), a) for a, poly in nbs]
+            if not near or min(near)[0] > 0.3:
+                continue
+            face = min(near)[1]
+            off = next(((q.x + dx, q.y + dy) for dx, dy in ((0.6, 0), (-0.6, 0), (0, 0.6), (0, -0.6))
+                        if cpoly.contains(Point(q.x + dx, q.y + dy))), None)
+            if off is None:
+                continue
+            np_ = deep_copy(proto)
+            node = np_[0] if isinstance(np_, list) else np_
+            set_int(node.children[0], int(round(off[0] * FIXED)))
+            set_int(node.children[1], int(round(off[1] * FIXED)))
+            set_list(node.children[2], [face])
+            c_list.children.append(np_)
+        c_areas.children.append(c_entry)
+        coast_pts = len(c_list.children)
+
     beliefs.children.append(bel)
     entry = deep_copy(owns.children[-1])
     set_int(entry[0], new_id)
@@ -1426,7 +1646,7 @@ def patrol(sp, spec, info, ai_of, new_ai, ids: IdPool) -> None:
     set_list(analyser.children[0], region_bel + [new_id])
     set_list(analyser.children[1], list(analyser.children[1].value) + [new_ai, new_id])
     print(f"border patrol: belief {new_id}; {moved_pts} of the parent's main-area points moved to the child; "
-          f"neighbour points re-targeted {retargeted}")
+          f"neighbour points re-targeted {retargeted}; coast points made {coast_pts}")
 
 
 def main():
@@ -1458,7 +1678,7 @@ def main():
         info = split_regions_esf(reg, spec)
         split_startpos(sp, spec, info, ids)
         if pf is not None:
-            split_pathfinding(pf, sp, spec, info)
+            (open_void_pathfinding if spec.get("void_parent") else split_pathfinding)(pf, sp, spec, info)
     outputs = [(a.out / "regions.esf", rr, reg), (a.out / "startpos.esf", sr, sp)]
     if pf is not None:
         outputs.append((a.out / "pathfinding.esf", pr, pf))
