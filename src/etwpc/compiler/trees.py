@@ -8,8 +8,10 @@ carved out of a forest keeps the forest standing on it.
 
 File: b"G@M=", u32 1, f32 1024.0, u32 6, u32 type count, then per type: u16 n + UTF-16 model
 path ("RigidModels/CampaignTrees/Campaign_tree_coniferous01.rigid_model"), u32 1, u32 count,
-6 x f32 model bounds, count x (x, rotation?, y, ~35..38) float32 in map coordinates (the same
-x/y as regions.esf). Vanilla: 174 types, 27,587 instances, each a cluster model.
+6 x f32 model bounds, count x (x, ground height, y, 35..38.5) float32: x/y in map coordinates
+(the same as regions.esf), the height ~= 0.00964 * heightmaps\\default.tga + 0.012 (r 0.97 over
+every vanilla tree), the last uniform in [35, 38.5]. Vanilla: 174 types, 27,587 instances, each a
+cluster model; palms are Campaign_tree_palm01..03 (2,198, nearest palm median 0.9 units).
 
 Vanilla keeps ground clear round what it places (nearest tree, 5th percentile): capitals 1.9,
 settlement building slots 1.5..2.3, ports 1.7, towns 1.45, resource slots 1.2.
@@ -49,6 +51,11 @@ def write_trees(header: bytes, types: list[list]) -> bytes:
     for name, one, bounds, recs in types:
         out += [name, struct.pack("<II", one, len(recs)), bounds, *recs]
     return b"".join(out)
+
+
+def tree_height(h: float) -> float:
+    """A tree record's ground height from the heightmap value under it."""
+    return 0.00964 * h + 0.012
 
 
 def tree_xy(rec: bytes) -> tuple[float, float]:
