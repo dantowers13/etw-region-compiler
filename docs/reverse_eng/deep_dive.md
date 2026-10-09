@@ -2124,3 +2124,49 @@ parchment only) barely touched it, while the water ramp was sampled from that sh
 4 -> 6 units; ramps and tint come from unshadowed open water only; the water texture is splatted
 from windows of the northern gulf that are open water 20 px off any shore (a box with coast in it
 striped the water with fins).
+
+### 10.21 Relief, southern Egypt and palms (2026-10-09)
+
+The campaign terrain's heights are `heightmaps\default.tga` in main.pack (Empire.exe names
+`heightmaps/default.tga`): 8192 x 4096, 8-bit grey, bottom-up rows, on the same grid as
+supertexture mip 3 (3.2 px per map unit; map -> row `(640 - y) * 3.2`, column `(x + 1280) * 3.2`).
+Sea is 0, and so is everything south of the old torn edge: vanilla drops from ~70 to 0 within 2-3
+units there, a cliff onto flat sea-level ground. Vanilla land: deserts p50 30-57, coasts ~3, Zagros
+p95 141 / max 198. fx\supertexturetile.fx blends a dark rock texture onto slopes above world y 0.4
+(full by 0.8) and whitens ground above 1.4; world y ~= 0.00964 * height + 0.012 (fitted on the
+trees below), so rock starts at height ~40 and snow at ~144. A movie pack carrying the file
+overrides main.pack's.
+
+`paint_supertexture.py` now also writes the heightmap (`--no-relief` to skip): vanilla heights clear
+of the cliff carried in as a push-pull membrane, Arabia tilting from ~53 by the Red Sea to ~15 by
+the Gulf (a Red-Sea-vs-Gulf distance ratio), coast ramps over 5 units, micro-relief splatted from
+vanilla's Nafud heights, and under the painted mountains the Zagros heights from the same patches
+the painted ridges come from (one 4-channel splat), so relief sits under the painted ridges; peaks
+are soft-capped at 135 (in game, peaks of 190 came out snow-white). Mountains are painted as the
+local desert shaded by the ridges (a separate dark tone stood out red-brown).
+
+Tidying, from the first in-game look (`map_poc5`, relief works):
+- the canvas is now map x 120..460: the Egypt region (to x 150) is painted west to a new ragged
+  torn edge at x ~140 (`--west-edge`), shadowed like vanilla's (0.55 at the edge over 4 units);
+- paint runs down to the frame bar (y 133.35) and across the parchment strip between the Europe
+  and India panels;
+- sand (the Rub' al Khali, and the Dahna arc as a band of the tilt ratio) versus gravel, from the
+  painted Nafud and Syrian desert; west of the Red Sea, the painted Egyptian desert;
+- splat patches are zero-mean and jittered (a patch's own offset made a grid of blotches);
+- "near the void regions" is measured over land: straight-line distance crossed the Strait of
+  Hormuz, painted Iran's coast by Bandar Abbas as parchment and laid Hajar relief on it. Iran's
+  painted beach lies outside its region polygon (regions.esf "sea" drawn as land) and was being
+  repainted as water; water within 1.5 units of a non-void coast now stays vanilla;
+- the old torn edge is feathered 3 units into vanilla land along a noisy distance (Nile green
+  left alone): the 10 px blend kept its ragged outline as a seam along Jawf's southern border.
+
+Palms: a campaign tree record is `(x, ground height, y, 35..38.5)` (field 1 correlates 0.97 with
+the heightmap under every vanilla tree; `trees.tree_height`). Palms are
+`Campaign_tree_palm01..03` (2,198 vanilla clusters, nearest palm median 0.9 units). 146 clusters
+go in: oases and towns placed from a lat/lon fit to eight coastal landmarks (within ~2 units;
+Egypt's from the painted Nile), and shore strips (Batinah, Tihama, the Nubian Nile), off the
+mountains, at least 0.45 apart, with a 0.3 olive tint on the ground under them. With
+`--region-pack` the trees come from the region build's new_regions.pack and a copy of that pack
+with the same trees file is written beside the map pack, so it doesn't matter which pack wins;
+rerun the painter after any S3 rebuild or the palms are lost. In game the darker half of the Red
+Sea is the fog of war, not the texture.
