@@ -2448,12 +2448,17 @@ map_poc19 -> deploy) -> add_faction -> unlock -> out/m1_wallachia.
 ### 11.7 Faction art: what the game actually reads (2026-10-11)
 
 * The HUD / selection flags come from the folder in FACTION_FLAG_AND_COLOURS (`data\ui\flags\<x>`).
-* The 3D campaign flags (settlements, armies) use `testdata\campaignflags\flag_<texture key>.dds`
-  when it exists, and fall back to the UI folder otherwise: texture key greece has no campaign flag
-  (testdata holds 48), and greece's UI flag showed. Our first DXT3 re-encode drew plain faction
-  colour: Pillow writes a row pitch where vanilla's header has the linear size of the top level
-  (131,072 for 512 x 256 DXT3) and an RGB bit count of 32 where vanilla has 0. dds_for_game now
-  writes vanilla's header (byte-identical to flag_georgia.dds).
+* The 3D campaign flags (settlements, armies, generals) come from a **texture atlas**: Empire.exe
+  builds `flag_` + texture key and looks it up in `RigidModels/Flags/Textures/flags.tai` (text:
+  name, atlas file, index, 2D, u, v, depth, width, height) over flags0..3.dds (DXT1, full mips;
+  flags0-2 2048 x 2048 full, flags3 2048 x 1024 with six free 512 x 256 slots). A missing entry falls
+  back to `flag_default.tga`, drawn in the faction colour: Wallachia's plain red flags. greece has
+  an entry, hence the Greek flags while the texture key was greece. `testdata\campaignflags` is not
+  used for this (it has no greece). add_faction splices each new flag into a free flags3 slot,
+  replacing only that slot's 4 x 4 DXT1 blocks per mip level, and appends the .tai line. Ships use
+  the same scheme in naval_id.tai (`naval_ID_<key>`, 128 x 256 slots), not yet done (Wallachia has
+  no port). (Also fixed on the way: dds_for_game writes vanilla's DDS header, linear size and no RGB
+  bit count, byte-identical to flag_georgia.dds.)
 * The agent coin is a registered rigid model: warscape_rigid (`agent_ID_<x>`,
   `RigidModels/CampaignBuildings/CampaignAgentIcons/Textures`, `campaign_template_extra`) and
   warscape_rigid_lod (LOD id, `.../agent_ID_<x>.rigid_model`, `0`, `agent_ID_<x>`); both plain

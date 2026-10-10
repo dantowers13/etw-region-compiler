@@ -771,6 +771,56 @@ def dds_for_game(data: bytes, fmt: str) -> bytes:
     return bytes(head) + b"".join(lv[128:] for lv in levels)
 
 
+FLAG_ATLAS = "rigidmodels\\flags\\textures\\"
+
+
+def campaign_flag_atlas(game_data: Path, flags: list[tuple[str, bytes]]) -> list[tuple[str, bytes]]:
+    """Put each (texture key, 512 x 256 image) into the campaign-flag atlas. The 3D flags on the
+    map are `flag_<texture key>.tga` entries of RigidModels/Flags/Textures/flags.tai (text: name,
+    atlas file, index, 2D, u, v, depth, width, height) in flags0..3.dds; a missing entry falls back
+    to flag_default, drawn in the faction colour. flags3 (2048 x 1024) has six free 512 x 256 slots.
+    The atlas is DXT1 with a full mip chain: each flag is encoded per mip level and only its own
+    4 x 4 blocks are replaced, so the vanilla flags keep their bytes."""
+    import io
+    from PIL import Image
+    from reactivate_region import pack_file
+    tai = pack_file(game_data / "models.pack", FLAG_ATLAS + "flags.tai").decode("latin1")
+    atlas = bytearray(pack_file(game_data / "models.pack", FLAG_ATLAS + "flags3.dds"))
+    H, W = struct.unpack_from("<II", atlas, 12)
+    mips = struct.unpack_from("<I", atlas, 28)[0]
+    assert atlas[84:88] == b"DXT1", "flags3.dds is not DXT1"
+    taken = []
+    for line in tai.splitlines():
+        if line.startswith("#") or not line.strip():
+            continue
+        name, rest = line.split(None, 1)
+        f, _, _, u, v, _, w, h = [x.strip() for x in rest.split(",")]
+        if f == "flags3.dds":
+            taken.append((round(float(u) * W), round(float(v) * H)))
+    free = [(x, y) for y in range(0, H, 256) for x in range(0, W, 512) if (x, y) not in taken]
+    assert len(flags) <= len(free), f"only {len(free)} free campaign-flag slots"
+    offs, o = [], 128
+    for m in range(mips):
+        offs.append(o)
+        o += max(1, (max(1, W >> m) + 3) // 4) * max(1, (max(1, H >> m) + 3) // 4) * 8
+    for (tex, img), (x, y) in zip(flags, free):
+        src = Image.open(io.BytesIO(img)).convert("RGB").resize((512, 256), Image.LANCZOS)
+        for m in range(mips):
+            xm, ym, wm, hm = x >> m, y >> m, 512 >> m, 256 >> m
+            if wm < 4 or hm < 4:
+                break                      # below 4 px the slot shares blocks with its neighbours
+            b = io.BytesIO()
+            src.resize((wm, hm), Image.LANCZOS).save(b, "DDS", pixel_format="DXT1")
+            blocks = b.getvalue()[128:]
+            per_row, atlas_row = wm // 4, max(1, (max(1, W >> m) + 3) // 4)
+            for r in range(hm // 4):
+                dst = offs[m] + ((ym // 4 + r) * atlas_row + xm // 4) * 8
+                atlas[dst:dst + per_row * 8] = blocks[r * per_row * 8:(r + 1) * per_row * 8]
+        tai += (f"flag_{tex}.tga\t\tflags3.dds, 3, 2D, {x / W:.6f}, {y / H:.6f}, 0.000000, "
+                f"{512 / W:.6f}, {256 / H:.6f}\n")
+    return [(FLAG_ATLAS + "flags.tai", tai.encode("latin1")), (FLAG_ATLAS + "flags3.dds", bytes(atlas))]
+
+
 def agent_model(game_data: Path, tex: str, key: str) -> bytes:
     """The template's campaign agent coin model with its texture name (a u16-length UTF-16
     string, 'agent_ID_<tex>_diffuse') pointed at the new faction's texture."""
@@ -803,6 +853,7 @@ def build_db(specs: list[FactionSpec], game_data: Path, assets: Path, region_fil
     rigid = string_rows(latest(game_data, "db\\warscape_rigid_tables\\warscape_rigid"), 3)
     rigid_lod = string_rows(latest(game_data, "db\\warscape_rigid_lod_tables\\warscape_rigid_lod"), 4)
     new_rigid, new_lod = [], []
+    atlas_flags = []
     for s in specs:
         t = s.template
         tdisp = loc_text(loc, f"factions_screen_name_{t}")
@@ -832,6 +883,7 @@ def build_db(specs: list[FactionSpec], game_data: Path, assets: Path, region_fil
                     data = dds_for_game(data, "DXT1" if src.startswith("ensign") else "DXT3")
                 flags.append((dst, data))
             flags.append((f"{icons}\\agent_id_{s.key}.rigid_model", agent_model(game_data, t, s.key)))
+            atlas_flags.append((s.key, (own / f"flag_{s.key}.dds").read_bytes()))
             # the coin is registered as a rigid model: (key, texture folder, template) and
             # (LOD id, model path, level, key); copied from the template's agent_ID_<tex> rows
             old, new = f"agent_ID_{t}", f"agent_ID_{s.key}"
@@ -852,6 +904,8 @@ def build_db(specs: list[FactionSpec], game_data: Path, assets: Path, region_fil
             tb = struct.pack("<BI", 1, len(rows_)) + b"".join(ws(x) for r in rows_ for x in r)
             assert string_rows(tb, k) == rows_
             files[f"db\\{tag}_tables\\new_factions"] = tb
+    if atlas_flags:
+        flags += campaign_flag_atlas(game_data, atlas_flags)
     text.update(extra_text)
     files["text\\localisation.loc"] = build_loc(loc, text)
     for n, d in flags:
