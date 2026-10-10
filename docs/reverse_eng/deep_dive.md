@@ -2344,3 +2344,40 @@ or the faction's own id), checked against Lord's entries for its new factions.
 
 Costs to watch: diplomacy grows as n^2 (86^2 = 7,400 relationships), and every faction adds an AI
 turn, so end-turn time and save size grow.
+
+### 11.4 M0: what a new faction needs in startpos (2026-10-10)
+
+Census (vanilla 56 vs Lord 62, same paths): exactly 13 structures follow the faction count, as in
+11.1; the rest that look faction-sized are AI working lists of varying length. `add_faction.py`
+clones an emergent template (greece) per new faction:
+
+* FACTION record: the template's, with the ids private to it renumbered (government id, 7 post ids,
+  technology manager id, which the AI tech tree also names) and new key / display name. Faction ids
+  are referenced only by FACTION [7], CAI_FACTION [6], the faction's own FAMILY and the 55
+  DIPLOMACY_RELATIONSHIP [0]s. Relationships go both ways (each faction's to the template copied);
+  their order is free (Lord prepends).
+* AI ids: CAI_WORLD_FACTIONS item [2] = AI faction id X, CAI_FACTION [12] and [9] (tech tree) its
+  companions; the AI manager's CAI_FACTION_MANAGER [0] = X; CAI_INTERFACE [29] holds (X, kind) pairs,
+  kind = CAI_FACTION_MANAGER [1] (11; 2 for the last). Lord's new factions use 98/99 million ids.
+* AI manager: each pool object (belief / desire / intention) has its id at [2]; greece's 163 are
+  all defined in its own manager, and 148 also sit in CAI_WORLD [32], the AI world's registry of pool
+  objects (17,375 ids, pool objects only). The clone renumbers all 163 and registers the copies.
+* Global pool (CAI_INTERFACE [26]): five beliefs per AI faction, owner at body [0]:
+  CAI_DIPLOMATIC_ANALYSIS (its CAI_DIPLOMATIC_ANALYSIS_FACTIONINFO lists every other AI faction,
+  never the owner), CAI_RELATION_ANALYSIS, CAI_OWNED_REGIONS_ANALYSIS,
+  CAI_BASIC_FACTION_ABSOLUTE_ANALYSIS, CAI_ACTIVE_RECRUITMENT_ANALYSIS. Each is owned by an analyser
+  desire: CAI_ANALYSER [0] belief ids, [1] (faction, belief) pairs, BLOCK_OWNS items
+  [belief, analyser, 0.0, 0.0, 1]. Living factions have four more (military strength, unit
+  availability, trade route, navy damage); emergents do not. Per-pair beliefs (attitude analyses,
+  relation timelines) are left to the engine (Lord's new factions lack the timelines).
+* DB: factions table rows are key, u32 row id (unique; 1-87 then random), subculture 'sc_..', AI
+  personality, name, adjective, name list, unit-icon and flag paths, colours as floats, rebel
+  faction; 95 rows, sorted by key (vanilla already has rows for khanate_khiva, holstein_gottorp,
+  mecklenburg, swiss_confederation, tuscany, powhatan, which are not in the startpos).
+  technology_faction_junctions is (technology, faction) rows (greece: 79). Text:
+  factions_screen_name_<key>, factions_screen_adjective_<key>,
+  start_pos_factions_description_<key>, random_localisation_strings_string_attack/defend_<key>.
+
+Builds: `out/m0_wallachia` (57 factions) and `out/m0_cap90` (Wallachia + 33 dummies = 90), both on
+batch3b_deploy; structural checks pass (sizes, relationships both ways, one analysis per AI faction
+listing every other, no AI object defined twice, analysers consistent). Untested in game.
