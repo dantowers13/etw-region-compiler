@@ -170,6 +170,7 @@ class Startpos:
         self.ctt = find_fast(root, "CAI_WORLD_TECHNOLOGY_TREES")
         self.counts = int_counts(root)
         self.ids = IdPool(set(self.counts))
+        self.rng = random.Random(1700)
         # looked up once: walking the whole tree per faction is slow at 30+ factions
         self.analyses = find_all_fast(root, {"CAI_DIPLOMATIC_ANALYSIS"})["CAI_DIPLOMATIC_ANALYSIS"]
         gpool = sub(find_fast(root, "CAI_INTERFACE").children, "CAI_BDI_POOL")
@@ -248,6 +249,9 @@ class Startpos:
         k = faction_key_index(F)
         set_str(F.children[k], spec.key)
         set_str(F.children[k + 1], spec.display)
+        for nad in children(F):            # name-drawing seeds, one per name list
+            if isinstance(nad, ESFNode) and nad.tag == "NAME_ALLOCATION_DETAILS":
+                set_int(nad.children[1], self.rng.randrange(1 << 32))
         dra = find_fast(F, "DIPLOMACY_RELATIONSHIPS_ARRAY")
         selfrel = next(r for r in dra.children if sub(r, "DIPLOMACY_RELATIONSHIP").children[0].value == new_fid)
         set_int(sub(selfrel, "DIPLOMACY_RELATIONSHIP").children[0], t_fid)
@@ -267,24 +271,28 @@ class Startpos:
         mc = int_counts(t_mgr)
         private = {v for v, n in mc.items() if v >= 1000 and self.counts[v] == n}
         bdi = {v: self.ids.cai() for v in sorted(defined | private) if v not in cai}
-        m = deep_copy(t_mgr)
-        remap(m, cai | bdi | {t_fid: new_fid})
-        self.cim.children.append(m)
-        add = [bdi[v] for v in self.registry.value if v in bdi]
 
         # the global pool's beliefs about one faction (diplomatic, relation, owned-regions,
         # absolute and recruitment analyses: one each per AI faction), each listed by the
-        # analyser desire that owns it: [0] belief ids, [1] (faction, belief) pairs, BLOCK_OWNS
+        # analyser desire that owns it: [0] belief ids, [1] (faction, belief) pairs, BLOCK_OWNS.
+        # They and the manager name each other's objects, so one map renumbers both.
+        glob = [o for o in self.g_beliefs.children if (b := belief_body(o)) is not None and b.children
+                and isinstance(b.children[0], ESFPrimitive) and b.children[0].value == t_cai]
+        gmap = {o[2].value: self.ids.cai() for o in glob}
+        full = cai | bdi | gmap | {t_fid: new_fid}
+
+        remap(c, full)             # the AI faction record names some of them too
+        m = deep_copy(t_mgr)
+        remap(m, full)
+        self.cim.children.append(m)
+        add = [bdi[v] for v in self.registry.value if v in bdi]
+
         n_glob = 0
-        for o in list(self.g_beliefs.children):
+        for o in glob:
+            g, n = o[2].value, gmap[o[2].value]
             body = belief_body(o)
-            if body is None or not body.children or not isinstance(body.children[0], ESFPrimitive) \
-                    or body.children[0].value != t_cai:
-                continue
-            g, n = o[2].value, self.ids.cai()
             x = deep_copy(o)
-            remap(x, cai)
-            set_int(x[2], n)
+            remap(x, full)
             self.g_beliefs.children.append(x)
             if body.tag == "CAI_DIPLOMATIC_ANALYSIS":
                 self.analyses.append(belief_body(x))
@@ -305,9 +313,19 @@ class Startpos:
 
         # AI technology tree
         tt = deep_copy(t_tree)
-        remap(tt, cai | obj)
+        remap(tt, full | obj)
         clear_bdi(tt)
         self.ctt.children.append(tt)
+
+        # nothing the template owns may be left in the copies (two records naming one object
+        # made the game hang on exit)
+        # (the FACTION copy only against object ids: its name lists hold small numbers that
+        # coincide with AI ids)
+        owned = (set(full) | set(obj)) - {t_fid}
+        clones = [c, m, tt] + self.g_beliefs.children[-len(glob):]
+        leak = {v for x in clones for v in int_counts(x) if v in owned}
+        leak |= {v for v in int_counts(it) if v in set(obj) - {t_fid}}
+        assert not leak, f"{spec.key}: template ids left in the copies: {sorted(leak)[:20]}"
 
         # every AI's diplomatic analysis lists every other AI faction (never its owner): the new
         # faction joins each (as a copy of the template's entry); the template's own analysis and
@@ -345,7 +363,7 @@ class Startpos:
                                 set_str(p, f"data\\ui\\flags\\{spec.flag_key}")
                 nd.children.append(x)
 
-        for v in list(obj.values()) + list(cai.values()) + list(bdi.values()):
+        for v in list(obj.values()) + list(full.values()):
             self.counts[v] += 1
         print(f"  {spec.key}: faction id {new_fid:#x}, AI {c_id} (template {spec.template} {t_fid:#x} / {t_cai}), "
               f"{len(obj) - 1} object ids and {len(bdi)} AI ids renumbered, {n_glob} global beliefs, "
