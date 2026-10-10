@@ -2287,3 +2287,60 @@ Fix: both fields are 0 on every cloned settlement, and CAI_GARRISONABLE is 0 on 
 `crashfix_test.empire_save` (the crash save with the 17 shared CAI_GARRISONABLE cleared) passed
 Armenia's fall in game, and later turns too. Existing campaigns started on older builds still
 carry the links; the same clearing can be applied to their saves.
+
+## 11. New factions (plan, 2026-10-10)
+
+Goal (user): 20-30 brand-new factions on top of all 56 existing ones, keeping every emergent
+faction (no repurposing), so ~76-86 factions. First users: the Arabian factions (Sharifate of
+Mecca, Banu Khalid, Ya'rubid Oman, Emirate of Diriyah) and factions carved from the Ottomans.
+
+### 11.1 What exists
+
+* Vanilla startpos: 56 factions; 14 are empty emergent slots (no land, characters or armies:
+  united_states, punjab, mamelukes, scotland, norway, afghanistan, hungary, naples_sicily, ireland,
+  greece, hessen, quebec, mexico, colombia). An empty and a living FACTION record have the same
+  69-field layout; living ones fill CHARACTER_ARRAY, ARMY_ARRAY, GOVERNMENT posts, [29] (an id
+  list), [35]/[36]/[51] ids, and clear the flags at [40]/[58] (`main_2` starts mamelukes alive in
+  Mesopotamia, English text: the cleanest reference).
+* **Lord mod (`Lord_main`, `Lord_Lmain`): 62 factions**, new keys kandy, khanate_khiva, rajpootana,
+  hyderabad, utah_aztecs, pirate (renamed from pirates), ballast. Its DB (data/lord_mod/db) names
+  them in factions, technology_faction_junctions, units_to_exclusive_faction_permissions,
+  random_localisation_strings, warscape_rigid(_lod), region_unit_resources, historical_characters,
+  units, building_levels and campaign_map_towns_and_ports tables.
+* Per-faction structures (lengths 56 in vanilla, 62 in Lord): FACTION_ARRAY, PLAYERS_ARRAY,
+  FACTION_INFOS, SPYING_ARRAY, CAI_WORLD_FACTIONS (n+1), CAI_WORLD_TECHNOLOGY_TREES,
+  INTERNATIONAL_/DOMESTIC_TRADE_ROUTES, one DIPLOMACY_RELATIONSHIPS_ARRAY of n-1 per faction (n^2),
+  CAI_DIPLOMATIC_ANALYSIS_FACTIONINFO (n per belief), CAI_RELATION_ANALYSIS_TIMELINES (n-1),
+  CAI_BDI_COMPONENT_BLOCK_OWNS, and many n- and 2n-long value lists in CAI regions, region slots,
+  settlements, mobiles, forts, theatres, attitude managers and trade routes.
+
+**Unknown: a hard faction cap.** Nothing published; Lord stopping at 62 fits a 64-bit mask
+somewhere. The first build answers it (11.3, M0).
+
+### 11.2 Method
+
+Per-faction structures are found exactly, not guessed: walk vanilla and Lord in step and list
+every node / list whose length is 56 in one and 62 in the other at the same path (and n-1, n+1,
+2n). Each gets a rule for the new faction's entry (copy the template faction's, neutral default,
+or the faction's own id), checked against Lord's entries for its new factions.
+
+### 11.3 Milestones
+
+* **M0, dead factions and the cap**: `add_faction.py` appends empty factions cloned from an
+  emergent template (new FACTION id, key, every per-faction structure extended), plus DB rows
+  (factions, technology_faction_junctions, units_to_exclusive_faction_permissions copied from the
+  template) and text. Test 57 first, then ~90: loads and plays turns, or find the cap (64/65).
+  Also check whether campaigns/main scripting needs entries (a known crash a few turns in).
+* **M1, a living faction**: hand it regions (owner, governorship, CAI ownership; no shared
+  garrisons, 10.25), clone a leader, heir, generals and an army from a comparable minor, set
+  government, capital, diplomacy stances, AI entries; FACTION_INFOS / victory conditions for the
+  selection screen (unlock_factions). Proof: Sharifate of Mecca in Hejaz.
+* **M2, identity**: display name and description, flag (ui flags + warscape_rigid banner
+  entries), colours (FACTION_FLAG_AND_COLOURS), portraits, character names.
+* **M3, rosters and tech**: units_to_exclusive_faction_permissions by culture group (borrowing an
+  existing faction's roster first), technology trees.
+* **M4, spec table**: a FactionSpec per faction (key, names, religion, culture template, regions,
+  capital, leader, colours, playable), like the region SPECS; the 20-30 factions become entries.
+
+Costs to watch: diplomacy grows as n^2 (86^2 = 7,400 relationships), and every faction adds an AI
+turn, so end-turn time and save size grow.
