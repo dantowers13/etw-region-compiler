@@ -727,6 +727,32 @@ def loc_text(loc: bytes, key: str) -> str:
     raise KeyError(key)
 
 
+def dds_for_game(data: bytes, fmt: str) -> bytes:
+    """A DDS as the game's own: DXT-compressed with a full mip chain (vanilla flags are DXT3 with
+    10 levels, ensigns DXT1). An uncompressed or mip-less file is re-encoded; Pillow writes one
+    DXT level, so each level is encoded alone and the chain assembled under the first header."""
+    import io
+    from PIL import Image
+    mips = struct.unpack_from("<I", data, 28)[0]
+    if data[84:88] in (b"DXT1", b"DXT3", b"DXT5") and mips > 1:
+        return data
+    im = Image.open(io.BytesIO(data)).convert("RGBA")
+    levels = []
+    w, h = im.size
+    while True:
+        b = io.BytesIO()
+        im.resize((w, h), Image.LANCZOS).save(b, "DDS", pixel_format=fmt)
+        levels.append(b.getvalue())
+        if w == 1 and h == 1:
+            break
+        w, h = max(1, w // 2), max(1, h // 2)
+    head = bytearray(levels[0][:128])
+    struct.pack_into("<I", head, 8, struct.unpack_from("<I", head, 8)[0] | 0x20000)       # DDSD_MIPMAPCOUNT
+    struct.pack_into("<I", head, 28, len(levels))
+    struct.pack_into("<I", head, 108, struct.unpack_from("<I", head, 108)[0] | 0x400008)  # COMPLEX | MIPMAP
+    return bytes(head) + b"".join(lv[128:] for lv in levels)
+
+
 def agent_model(game_data: Path, tex: str, key: str) -> bytes:
     """The template's campaign agent coin model with its texture name (a u16-length UTF-16
     string, 'agent_ID_<tex>_diffuse') pointed at the new faction's texture."""
@@ -780,7 +806,10 @@ def build_db(specs: list[FactionSpec], game_data: Path, assets: Path, region_fil
                              (f"ensign_{s.key}_diffuse.dds", f"rigidmodels\\naval\\textures\\ensign_{s.key}_diffuse.dds"),
                              (f"agent_id_{s.key}_diffuse.tga", f"{icons}\\textures\\agent_id_{s.key}_diffuse.tga")):
                 assert (own / src).is_file(), f"{s.key}: {own / src} missing (its texture key is now {s.key})"
-                flags.append((dst, (own / src).read_bytes()))
+                data = (own / src).read_bytes()
+                if src.endswith(".dds"):
+                    data = dds_for_game(data, "DXT1" if src.startswith("ensign") else "DXT3")
+                flags.append((dst, data))
             flags.append((f"{icons}\\agent_id_{s.key}.rigid_model", agent_model(game_data, t, s.key)))
 
     # head[:9] = marker fcfdfeff, u32 version, 01; then the row count
