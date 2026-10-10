@@ -2438,7 +2438,7 @@ was heap corruption (0xc0000374).
   empty though its region named the new one. Fixed in make_living.
 * **Flags**: FACTION_FLAG_AND_COLOURS (two copies in FACTION) = [flag folder, 3 x RGB], and the
   factions row's field after the name list is the **texture key** (barbary_states: `barbary`,
-  khanate_khiva: `khanate`) naming `testdata\campaignflags\flag_<x>.dds`, `ensign_<x>_diffuse.dds`
+  khanate_khiva: `khanate`) naming the campaign-flag atlas entry `flag_<x>` (11.7), `ensign_<x>_diffuse.dds`
   and the agent coin `agent_id_<x>.rigid_model` (its texture a u16-length UTF-16 name inside). The
   row's colours are float triplets. All now set from the spec, and the art ships in the pack.
 
