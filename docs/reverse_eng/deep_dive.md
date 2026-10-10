@@ -2388,3 +2388,4 @@ a Task Manager dump of the WOW64 process: x86 context at *(TEB64 + 0x1488) + 4).
 the copied global beliefs named objects in greece's manager, and **a pool object's [10] is
 (owner, slot)**, its slot in the owner's CAI_ANALYSER [0] and BLOCK_OWNS (all 74,846 links in vanilla
 obey it); the copies kept greece's slots (51 / 49 instead of the new last). Both fixed.
+**M0 done (2026-10-10):** both builds load, play and quit cleanly (to the menu and to Windows).
