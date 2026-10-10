@@ -44,7 +44,8 @@ DEST = ROOT / "data/campaigns/main/startpos_unlocked.esf"
 # Not worth offering even though they hold land at the start.
 SKIP = {"pirates"}
 # Factions whose FACTION_INFOS portrait is empty borrow a related faction's.
-PORTRAIT_FROM = {"thirteen_colonies": "britain", "louisiana": "france", "chechenya_dagestan": "georgia"}
+PORTRAIT_FROM = {"thirteen_colonies": "britain", "louisiana": "france", "chechenya_dagestan": "georgia",
+                 "wallachia": "georgia"}
 # DMUC's Norway: (bool, year, turns/regions, bool, condition type), then False, False.
 VC_TEMPLATE = [(False, 1799, 25, False, 1), (False, 1799, 25, False, 3),
                (False, 1750, 15, False, 0), (False, 1799, 20, True, 2)]

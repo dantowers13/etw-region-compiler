@@ -35,8 +35,9 @@ import collections
 import random
 import shutil
 import struct
+import unicodedata
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -58,10 +59,34 @@ class FactionSpec:
     description: str = "Minor Faction"
     template: str = "greece"       # an empty emergent faction to clone
     flag_key: str = ""             # ui flags folder: own art if present, else the template's (main)
+    # M1, a living faction: regions handed over and a government cloned from a living donor
+    donor: str | None = None       # living faction whose government / court is cloned (georgia)
+    regions: tuple = ()            # regions handed over; the first is the capital
+    protector: str | None = None   # starts as this faction's protectorate (as Crimea / Ottomans)
+    people: dict = field(default_factory=dict)       # post -> (first, surname, born)
+    candidates: list = field(default_factory=list)   # unposted court, in order: (first, surname, born)
 
 
+# Ministers and court as of 1700 (birth years approximate where unknown). ETW has no heir or
+# family tree in the startpos: Brancoveanu's sons are court candidates with their real ages.
 FACTIONS = {
-    "wallachia": FactionSpec("wallachia", "Wallachia", "Wallachian", "Principality of Wallachia"),
+    "wallachia": FactionSpec(
+        "wallachia", "Wallachia", "Wallachian", "Principality of Wallachia",
+        donor="georgia", regions=("wallachia",), protector="ottomans",
+        people={
+            "faction_leader": ("Constantin", "Brâncoveanu", 1654),
+            "head_of_government": ("Constantin", "Cantacuzino", 1639),
+            "finance": ("Ianache", "Văcărescu", 1654),
+            "army": ("Toma", "Cantacuzino", 1665),
+            "justice": ("Mihai", "Cantacuzino", 1640),
+            "navy": ("Radu", "Greceanu", 1655),
+            "accident": ("Cornea", "Brăiloiu", 1650),
+            "governor_europe": ("Pârvu", "Cantacuzino", 1667),
+        },
+        candidates=[("Constantin", "Brâncoveanu", 1683), ("Ștefan", "Brâncoveanu", 1685),
+                    ("Radu", "Brâncoveanu", 1690), ("Matei", "Brâncoveanu", 1698),
+                    ("Dumitrașcu", "Corbea", 1665)],
+    ),
 }
 
 DB_PACKS = ["main.pack", "patch.pack", "patch2.pack", "patch3.pack", "patch4.pack", "patch5.pack"]
@@ -140,6 +165,22 @@ def restring(x, m: dict[str, str]) -> None:
             set_str(p, m[p.value])
 
 
+def ascii_key(s: str) -> str:
+    """'Brâncoveanu' -> 'Brancoveanu', for localisation keys (the text keeps the diacritics)."""
+    return "".join(c for c in unicodedata.normalize("NFKD", s) if c.isalnum() and ord(c) < 128)
+
+
+def fac_fields(F) -> dict[str, int]:
+    """Positions of FACTION fields found by their landmarks (unlock_factions inserts a
+    CAMPAIGN_VICTORY_CONDITIONS record into selectable factions, which shifts the rest):
+    the governor-post list follows MORGUE, the two capital-region ids follow the second
+    FORT_UPGRADE_MANAGER, the alive/emergent flag follows PRESTIGE."""
+    tags = [c.tag if isinstance(c, ESFNode) else None for c in F.children]
+    fu = [i for i, t in enumerate(tags) if t == "FORT_UPGRADE_MANAGER"][-1]
+    return {"govposts": tags.index("MORGUE") + 1, "cap1": fu + 1, "cap2": fu + 2,
+            "flag": tags.index("PRESTIGE") + 1}
+
+
 def belief_body(o):
     """A pool object's own record: its last child record that is not a BDI component."""
     return next((c for c in reversed(o) if isinstance(c, ESFNode)
@@ -171,6 +212,7 @@ class Startpos:
         self.counts = int_counts(root)
         self.ids = IdPool(set(self.counts))
         self.rng = random.Random(1700)
+        self.text = {}             # localisation the startpos now names (character names)
         # looked up once: walking the whole tree per faction is slow at 30+ factions
         self.analyses = find_all_fast(root, {"CAI_DIPLOMATIC_ANALYSIS"})["CAI_DIPLOMATIC_ANALYSIS"]
         gpool = sub(find_fast(root, "CAI_INTERFACE").children, "CAI_BDI_POOL")
@@ -246,6 +288,7 @@ class Startpos:
         it = deep_copy(T_item)
         F = sub(it, "FACTION")
         remap(F, obj)
+        restring(F, {spec.template: spec.key})     # CAMPAIGN_PLAYER_SETUP names the faction too
         k = faction_key_index(F)
         set_str(F.children[k], spec.key)
         set_str(F.children[k + 1], spec.display)
@@ -379,6 +422,192 @@ class Startpos:
               f"{n_info} analysis entries; now {len(self.fa.children)} factions")
         return {"fid": new_fid, "cai": c_id}
 
+    # ── M1: a living faction ─────────────────────────────────────────────────
+
+    def make_living(self, spec: FactionSpec, fid: int, c_id: int) -> None:
+        """Hand the spec's regions to the new faction and give it a government and court cloned
+        from a living donor (georgia: an absolute monarchy with 7 ministers, a governor and 5
+        unposted candidates). The donor's general and agents belong with its army (M1b)."""
+        D_item, D, d_fid = self.faction(spec.donor)
+        N_item, N, _ = self.faction(spec.key)
+        regs = {}
+        for it in find_fast(self.root, "REGIONS_ARRAY").children:
+            R = sub(it, "REGION")
+            regs[R.children[0].value] = R
+        cwr = {sub(it, "CAI_REGION").children[10].value: it for it in find_fast(self.root, "CAI_WORLD_REGIONS").children}
+        cap = regs[spec.regions[0]]
+        dfx, nfx = fac_fields(D), fac_fields(N)
+        cap_rid, d_cap_rid = cap.children[4].value, D.children[dfx["cap1"]].value
+
+        # the donor's court: ministers only (king, office holders, candidates)
+        d_gov, d_fam, d_chars = (sub(D.children, t) for t in ("GOVERNMENT", "FAMILY", "CHARACTER_ARRAY"))
+        def ctype(c):
+            return next(p.value for p in sub(c, "CHARACTER").children if isinstance(p, ESFPrimitive) and isinstance(p.value, str))
+        keep = [c for c in d_chars.children if ctype(c) == "minister"]
+        posts = [p[0] for p in d_gov.children[3].children]
+        post_type = {p.children[0].value: p.children[1].value for p in posts}
+        gship = next(sub(p.children, "GOVERNORSHIP") for p in posts if sub(p.children, "GOVERNORSHIP") is not None)
+        donor_ids = ([sub(c, "CHARACTER").children[2].value for c in d_chars.children]
+                     + list(post_type) + [d_gov.children[0].value, gship.children[1].value])
+        idmap = {v: self.ids.obj() for v in donor_ids}
+        idmap.update({d_fid: fid, d_cap_rid: cap_rid})
+        new_gpost = idmap[gship.children[1].value]
+
+        gov, fam = deep_copy(d_gov), deep_copy(d_fam)
+        chars = deep_copy(d_chars)
+        chars.children = [deep_copy(c) for c in keep]
+        for x in (gov, fam, chars):
+            remap(x, idmap)
+            restring(x, {spec.donor: spec.key})
+        for i, c in enumerate(N.children):
+            if isinstance(c, ESFNode) and c.tag in ("GOVERNMENT", "FAMILY", "CHARACTER_ARRAY"):
+                N.children[i] = {"GOVERNMENT": gov, "FAMILY": fam, "CHARACTER_ARRAY": chars}[c.tag]
+        set_list(N.children[nfx["govposts"]], [new_gpost])
+        set_int(N.children[nfx["cap1"]], cap_rid)
+        set_int(N.children[nfx["cap2"]], cap_rid)
+        N.children[nfx["flag"]] = deep_copy(D.children[dfx["flag"]])
+
+        # names and birth years
+        new_posts = {p[0].children[2].value: p[0].children[1].value for p in gov.children[3].children}
+        cands = list(spec.candidates)
+        for c in chars.children:
+            ch = sub(c, "CHARACTER")
+            ptype = new_posts.get(ch.children[2].value)
+            who = spec.people.get(ptype) if ptype else (cands.pop(0) if cands else None)
+            if who is None:
+                continue
+            first, surname, born = who
+            det = sub(ch.children, "CHARACTER_DETAILS")
+            locs = [x for x in det.children if isinstance(x, ESFNode) and x.tag == "CAMPAIGN_LOCALISATION"]
+            set_str(locs[0].children[0], self.name_key(spec.key, first))
+            set_str(locs[1].children[0], self.name_key(spec.key, surname) if surname else "")
+            set_str(det.children[4], "")
+            set_int(next(x for x in det.children if isinstance(x, ESFNode) and x.tag == "DATE").children[0], born)
+        king = spec.people["faction_leader"][0]
+        mon = fam.children[0]
+        rkey = f"names_royalty_name_{spec.key}{ascii_key(king)}"
+        set_str(mon.children[0].children[0], rkey)
+        self.text[rkey] = king
+        set_int(mon.children[6], 1)
+
+        # the governorship governs the handed-over regions
+        g = next(sub(p[0].children, "GOVERNORSHIP") for p in gov.children[3].children
+                 if sub(p[0].children, "GOVERNORSHIP") is not None)
+        set_list(g.children[2], [regs[r].children[4].value for r in spec.regions])
+
+        # AI: characters, governorship, faction lists
+        cwc = find_fast(self.root, "CAI_WORLD_CHARACTERS")
+        cwg = find_fast(self.root, "CAI_WORLD_GOVERNORSHIPS")
+        d_cwf = next(it for it in self.cwf.children
+                     if sub(it, "CAI_FACTION") is not None and sub(it, "CAI_FACTION").children[6].value == d_fid)
+        n_cwf = next(it for it in self.cwf.children
+                     if sub(it, "CAI_FACTION") is not None and sub(it, "CAI_FACTION").children[6].value == fid)
+        d_cai = d_cwf[2].value
+        d_cap_cai = cwr[next(k for k, R in regs.items() if R.children[4].value == d_cap_rid)][2].value
+        cap_cai = cwr[spec.regions[0]][2].value
+        kept_ids = {sub(c, "CHARACTER").children[2].value for c in keep}
+        d_cchars = [it for it in cwc.children if sub(it, "CAI_CHARACTER") is not None
+                    and sub(it, "CAI_CHARACTER").children[3].value in kept_ids]
+        d_cgov = next(it for it in cwg.children if sub(it, "CAI_GOVERNORSHIP").children[0].value == gship.children[1].value)
+        aimap = {it[2].value: self.ids.cai() for it in d_cchars}
+        aimap[d_cgov[1].value] = self.ids.cai()
+        aimap[d_cai] = c_id
+        full = idmap | aimap
+        for it in d_cchars:
+            x = deep_copy(it)
+            remap(x, full)
+            clear_bdi(x)
+            cwc.children.append(x)
+        xg = deep_copy(d_cgov)
+        remap(xg, full)
+        clear_bdi(xg)
+        set_list(sub(xg, "CAI_GOVERNORSHIP").children[3], [cwr[r][2].value for r in spec.regions])
+        cwg.children.append(xg)
+        gov_ai = xg[1].value
+        n_cf, d_cf = sub(n_cwf, "CAI_FACTION"), sub(d_cwf, "CAI_FACTION")
+        set_list(n_cf.children[4], [aimap[v] for v in d_cf.children[4].value if v in aimap])
+        for i, c in enumerate(d_cf.children):          # the donor's AI capital field(s)
+            if isinstance(c, ESFPrimitive) and not isinstance(c.value, bool) and c.value == d_cap_cai:
+                set_int(n_cf.children[i], cap_cai)
+
+        # hand over the regions (as reactivate_region.transfer_region)
+        for r in spec.regions:
+            R = regs[r]
+            old_fid, old_gov, rid = R.children[19].value, R.children[21].value, R.children[4].value
+            old_key = self.key_of(old_fid)
+            old_cwf = next(it for it in self.cwf.children
+                           if sub(it, "CAI_FACTION") is not None and sub(it, "CAI_FACTION").children[6].value == old_fid)
+            old_cai = old_cwf[2].value
+            OF = self.faction(old_key)[1]
+            ofx = fac_fields(OF)
+            assert rid not in (OF.children[ofx["cap1"]].value, OF.children[ofx["cap2"]].value), f"{r} is {old_key}'s capital"
+            for gr in find_all_fast(R, {"GARRISON_RESIDENCE"})["GARRISON_RESIDENCE"]:
+                if gr.children[0].value == old_fid:
+                    set_int(gr.children[0], fid)
+            for f in R.children[35].children:
+                if f[0].value == old_fid:
+                    set_int(f[0], fid)
+            restring(R, {old_key: spec.key})                 # buildings name their owner
+            set_int(R.children[19], fid)
+            set_int(R.children[21], new_gpost)
+            for gg in find_all_fast(self.root, {"GOVERNORSHIP"})["GOVERNORSHIP"]:
+                if gg.children[1].value == old_gov:
+                    set_list(gg.children[2], [v for v in gg.children[2].value if v != rid])
+            cai_rid = cwr[r][2].value
+            set_int(sub(cwr[r], "CAI_REGION").children[12], gov_ai)
+            for it in cwg.children:
+                cg = sub(it, "CAI_GOVERNORSHIP")
+                if cg.children[0].value == old_gov:
+                    set_list(cg.children[3], [v for v in cg.children[3].value if v != cai_rid])
+            ocf = sub(old_cwf, "CAI_FACTION")
+            set_list(ocf.children[0], [v for v in ocf.children[0].value if v != cai_rid])
+            set_list(n_cf.children[0], list(n_cf.children[0].value) + [cai_rid])
+            sett_id = R.children[5].children[4].value
+            for it in find_fast(self.root, "CAI_WORLD_SETTLEMENTS").children:
+                cs = sub(it, "CAI_SETTLEMENT")
+                if cs.children[2].value == sett_id:
+                    set_int(sub(it, "OWNED_DIRECT").children[0], c_id)
+                    set_int(cs.children[1], c_id if r == spec.regions[0] else 0)   # capital marker
+            print(f"    {r}: {old_key} -> {spec.key}")
+
+        # protectorate: copy an existing protector/protectorate pair (Crimea and the Ottomans)
+        if spec.protector:
+            P_item, P, p_fid = self.faction(spec.protector)
+            def rel(F, other):
+                return next(x for x in find_fast(F, "DIPLOMACY_RELATIONSHIPS_ARRAY").children
+                            if sub(x, "DIPLOMACY_RELATIONSHIP").children[0].value == other)
+            vassal = next(x for x in find_fast(P, "DIPLOMACY_RELATIONSHIPS_ARRAY").children
+                          if sub(x, "DIPLOMACY_RELATIONSHIP").children[4].value == "patron")
+            v_fid = sub(vassal, "DIPLOMACY_RELATIONSHIP").children[0].value
+            back = rel(self.faction(self.key_of(v_fid))[1], p_fid)
+            for F, other, src in ((P, fid, vassal), (N, p_fid, back)):
+                dra = find_fast(F, "DIPLOMACY_RELATIONSHIPS_ARRAY")
+                i = dra.children.index(rel(F, other))
+                x = deep_copy(src)
+                set_int(sub(x, "DIPLOMACY_RELATIONSHIP").children[0], other)
+                dra.children[i] = x
+            print(f"    protectorate of {spec.protector} (as {self.key_of(v_fid)})")
+
+        # nothing of the donor's court may be left in the copies
+        left = set(donor_ids) | set(aimap) - {d_cai}
+        leak = {v for x in (gov, fam, chars, xg) for v in int_counts(x) if v in left}
+        assert not leak, f"{spec.key}: donor ids left in the copies: {sorted(leak)[:10]}"
+        print(f"    court of {len(keep)} from {spec.donor}, governorship {new_gpost:#x} (AI {gov_ai}), "
+              f"{len(d_cchars)} AI characters")
+
+    def key_of(self, fid: int) -> str:
+        for it in self.fa.children:
+            F = sub(it, "FACTION")
+            k = faction_key_index(F)
+            if F.children[k - 1].value == fid:
+                return F.children[k].value
+        raise KeyError(fid)
+
+    def name_key(self, faction: str, name: str) -> str:
+        key = f"names_name_names_{faction}{ascii_key(name)}"
+        self.text[key] = name
+        return key
+
 
 # ─── DB, text, flags ──────────────────────────────────────────────────────────
 
@@ -471,7 +700,7 @@ def loc_text(loc: bytes, key: str) -> str:
 
 
 def build_db(specs: list[FactionSpec], game_data: Path, assets: Path,
-             region_files: list[tuple[str, bytes]]) -> list[tuple[str, bytes]]:
+             region_files: list[tuple[str, bytes]], extra_text: dict) -> list[tuple[str, bytes]]:
     fac = latest(game_data, "db\\factions_tables\\factions")
     head, rows, row_ids = factions_rows(fac)
     tech = junction_rows(latest(game_data, "db\\technology_faction_junctions_tables\\technology_faction_junctions"))
@@ -508,6 +737,7 @@ def build_db(specs: list[FactionSpec], game_data: Path, assets: Path,
     files["db\\factions_tables\\new_factions"] = table
     files["db\\technology_faction_junctions_tables\\new_factions"] = \
         struct.pack("<BI", 1, len(new_tech)) + b"".join(ws(a) + ws(b) for a, b in new_tech)
+    text.update(extra_text)
     files["text\\localisation.loc"] = build_loc(loc, text)
     for n, d in flags:
         files[n] = d
@@ -542,7 +772,9 @@ def main():
     sp = Startpos(root)
     print(f"{len(sp.fa.children)} factions")
     for s in specs:
-        sp.add(s)
+        new = sp.add(s)
+        if s.donor:
+            sp.make_living(s, new["fid"], new["cai"])
     data = ESFWriter(root, r.tag_names, r.timestamp).to_bytes()
     (a.out / "startpos.esf").write_bytes(data)
     r2 = ESFReader(a.out / "startpos.esf")
@@ -552,7 +784,7 @@ def main():
     for f in a.mod.iterdir():
         if f.name not in ("startpos.esf", "new_regions.pack") and f.is_file():
             shutil.copy2(f, a.out / f.name)
-    files = build_db(specs, a.game_data, a.assets, read_pack(a.mod / "new_regions.pack"))
+    files = build_db(specs, a.game_data, a.assets, read_pack(a.mod / "new_regions.pack"), sp.text)
     build_pack(a.out / "new_regions.pack", files)
     print(f"wrote {a.out / 'new_regions.pack'}")
     with open(a.out / "MANIFEST.txt", "a", encoding="utf-8") as m:

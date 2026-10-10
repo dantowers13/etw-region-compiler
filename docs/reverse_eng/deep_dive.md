@@ -2389,3 +2389,34 @@ the copied global beliefs named objects in greece's manager, and **a pool object
 (owner, slot)**, its slot in the owner's CAI_ANALYSER [0] and BLOCK_OWNS (all 74,846 links in vanilla
 obey it); the copies kept greece's slots (51 / 49 instead of the new last). Both fixed.
 **M0 done (2026-10-10):** both builds load, play and quit cleanly (to the menu and to Windows).
+
+### 11.5 M1a: a living Wallachia without an army (2026-10-10)
+
+`add_faction.py` `make_living` (FactionSpec donor / regions / protector / people / candidates),
+then `unlock_factions.py` (portrait borrowed from georgia). Built `out/m1_wallachia`.
+
+* **Court**: georgia's GOVERNMENT (gov id, 7 minister posts + `governor_europe` whose GOVERNORSHIP
+  is [taxes, post id, region ids, faction id, ..]), FAMILY (the regnal registry: first entry =
+  current monarch, `names_royalty_name_<faction><Name>` + count, here 1) and its 13 `minister`
+  characters (king, 7 office holders, 5 unposted candidates), all object ids renumbered. ETW keeps
+  no heir or family tree: Brancoveanu's sons are candidates with their birth years. A character's
+  name is CAMPAIGN_LOCALISATION keys `names_name_names_<list><Name>` (first, surname), [4] the
+  regnal number, the first DATE its birth year; the keys are added to the text.
+* **FACTION fields** (found by landmark; unlock_factions inserts CAMPAIGN_VICTORY_CONDITIONS into
+  selectable factions): after MORGUE the governor-post list, after the second FORT_UPGRADE_MANAGER
+  the capital region id twice, after PRESTIGE the alive flag (emergents True).
+* **AI**: one CAI_WORLD_CHARACTERS record per character (OWNED_INDIRECT = AI faction,
+  CAI_CHARACTER [3] = character id; the faction's CAI_FACTION [4] lists them), a CAI governorship
+  ([post id, theatre, governor's AI character, region AI ids]; its own id is CAI_REGION [12]),
+  CAI_FACTION [0] = owned region AI ids, the AI capital where the donor has its own, the capital
+  settlement's CAI_SETTLEMENT [1] = AI faction id.
+* **Handover** as transfer_region: owner, garrison residences, REGION [35], building owner strings,
+  governorship lists, AI lists.
+* **Protectorate**: copied from Crimea and the Ottomans: the patron side `patron` ([2] True,
+  attitude 85, tribute 10 in [15]), the vassal side `protectorate` ([3] -1, [19] 1, [21] True).
+* The donor's general and agents (agents' AI records name the army's mobile) wait for M1b with
+  the army and its CHARACTER_OBSTACLE.
+
+Bug found on the way: a cloned FACTION kept the template's key in CAMPAIGN_PLAYER_SETUP [2]
+(harmless while dead; unlock_factions then saw a second greece). check_factions now also checks
+governorships, region AI ownership, AI character records, posts and player-setup keys.

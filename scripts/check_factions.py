@@ -23,6 +23,8 @@ fids, keys = [], []
 for it in fa.children:
     F = sub(it, "FACTION"); k = faction_key_index(F); fids.append(F.children[k - 1].value); keys.append(F.children[k].value)
 check(len(set(fids)) == n and len(set(keys)) == n, f"{n} factions, ids and keys unique")
+setup_keys = [find_fast(sub(it, "FACTION"), "CAMPAIGN_PLAYER_SETUP").children[2].value for it in fa.children]
+check(setup_keys == keys, f"every FACTION's CAMPAIGN_PLAYER_SETUP names its own key ({sum(a != b for a, b in zip(setup_keys, keys))} wrong)")
 for tag, want in (("SPYING_ARRAY", n), ("FACTION_INFOS", n), ("CAI_WORLD_TECHNOLOGY_TREES", n), ("DOMESTIC_TRADE_ROUTES", n),
                   ("INTERNATIONAL_TRADE_ROUTES", n), ("CAI_WORLD_FACTIONS", n + 1), ("CAI_INTERFACE_MANAGERS", n + 1)):
     check(len(find_fast(root, tag).children) == want, f"{tag} has {want}")
@@ -111,4 +113,38 @@ for oid, o in objs.items():
         checked += 1
         if not (lst[j + 1] < len(bo.children) and bo.children[lst[j + 1]][0].value == oid): bad_slot += 1
 check(bad_slot == 0, f"AI owner slots consistent ({checked} links, {bad_slot} wrong)")
+# living factions: regions, governorships, characters and their AI records agree
+ra = find_fast(root, "REGIONS_ARRAY")
+regs = {sub(it, "REGION").children[0].value: sub(it, "REGION") for it in ra.children}
+govs = find_all_fast(root, {"GOVERNORSHIP"})["GOVERNORSHIP"]
+in_gov = collections.Counter(v for g in govs for v in g.children[2].value)
+gov_of = {v: g.children[1].value for g in govs for v in g.children[2].value}
+owned_regs = [R for R in regs.values() if R.children[19].value in fset]
+bad = [R.children[0].value for R in owned_regs if in_gov[R.children[4].value] != 1 or gov_of.get(R.children[4].value) != R.children[21].value]
+check(not bad, f"every owned region in exactly one governorship, matching REGION[21] ({len(bad)} wrong: {bad[:5]})")
+cwr = {sub(it, "CAI_REGION").children[11].value: it for it in find_fast(root, "CAI_WORLD_REGIONS").children}
+cai_of_fid = {sub(it, "CAI_FACTION").children[6].value: it for it in cwf.children if sub(it, "CAI_FACTION") is not None}
+owner_lists = collections.Counter(v for it in cwf.children if sub(it, "CAI_FACTION") is not None for v in sub(it, "CAI_FACTION").children[0].value)
+bad = []
+for R in owned_regs:
+    ci = cwr.get(R.children[4].value)
+    if ci is None: continue
+    rid_ai = ci[2].value
+    if rid_ai not in sub(cai_of_fid[R.children[19].value], "CAI_FACTION").children[0].value or owner_lists[rid_ai] != 1: bad.append(R.children[0].value)
+check(not bad, f"every owned region's AI id is listed by its owner's AI faction only ({len(bad)} wrong: {bad[:5]})")
+cwc = find_fast(root, "CAI_WORLD_CHARACTERS")
+cai_char = collections.Counter(sub(it, "CAI_CHARACTER").children[3].value for it in cwc.children if sub(it, "CAI_CHARACTER") is not None)
+all_chars, bad_ai, bad_post = [], [], []
+for it, fid in zip(fa.children, fids):
+    F = sub(it, "FACTION")
+    ids_here = [sub(c, "CHARACTER").children[2].value for c in find_fast(F, "CHARACTER_ARRAY").children]
+    all_chars += ids_here
+    bad_ai += [hex(c) for c in ids_here if cai_char[c] != 1]
+    gov = sub(F.children, "GOVERNMENT")
+    for pst in gov.children[3].children:
+        cid = pst[0].children[2].value
+        if cid and cid not in ids_here: bad_post.append(hex(cid))
+check(len(all_chars) == len(set(all_chars)), f"{len(all_chars)} character ids unique")
+check(not bad_ai, f"every character has exactly one AI record ({len(bad_ai)} wrong: {bad_ai[:5]})")
+check(not bad_post, f"every government post names a character of its faction ({len(bad_post)} wrong)")
 print("ALL PASS" if ok else "SOME FAILED")
