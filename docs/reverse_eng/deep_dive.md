@@ -2239,7 +2239,7 @@ with `--region-pack` (palms keep 1.6 units off every settlement and slot) -> `ou
 
 ### 10.24 Next session (from the user, 2026-10-10)
 
-1. **The ~turn 10 crash.** `Empire.exe+0xd96afe` (`_purecall`, the campaign AI calling a method
+1. **The ~turn 10 crash** (fixed, 10.25). `Empire.exe+0xd96afe` (`_purecall`, the campaign AI calling a method
    on a deleted object; see `crash_triage.py`) is now 6 dumps across campaigns (Oct 8-10), and
    was seen before Hejaz existed, so batch 2 (or earlier) is the first suspect. Plan: a save a
    turn before the crash; bisect builds (no batch 2 / no Basra-Mosul / vanilla); identify the
@@ -2256,3 +2256,34 @@ with `--region-pack` (palms keep 1.6 units off every settlement and slot) -> `ou
 5. **A Red Sea sea-travel zone to open ports there** (Jeddah first). New ports need
    `sea_grids.esf` / `trade_routes.esf` entries, not decoded for this yet.
 6. Link Hejaz to Jawf by land (a border strip in the 1.5-unit gap; Jawf's land reaches it).
+
+### 10.25 The ~turn 10 crash: clones shared the template's garrison (2026-10-10, fixed)
+
+Item 1 of 10.24. The autosave written a minute before the 00:22 crash (an Ottoman campaign,
+kept as `out/crash_saves/purecall_batch3_20261010_0021.empire_save`) crashed twice in a row at
++0xd96afe on Georgia's turn, right after Georgia took Armenia: deterministic.
+
+In the dump the dead object holds Armenia's settlement position at +0x10/+0x14 and CAI id 5794 at
++0x4c; the list element walking into it carries ids 91000147 and 91000389, which are **Mosul's**
+CAI region and CAI settlement (our `IdPool` band). 5794 is the `CAI_RESOURCE_MOBILE` of Armenia's
+garrison army.
+
+`patch_startpos` deep-copies the template's REGION and CAI_WORLD_SETTLEMENTS item. Two fields
+in them name the settlement's garrison and were kept:
+
+* `SETTLEMENT/SIEGEABLE_GARRISON_RESIDENCE[12]`: the garrison ARMY id (also an ARMY, its general's
+  CHARACTER and a CAI_RESOURCE_MOBILE); 0 in 75 vanilla settlements, never shared;
+* `CAI_GARRISONABLE[0]`: the same garrison's CAI mobile id.
+
+So all 16 armenia clones (batch 2, Jawf, Hejaz) claimed Armenia's army, as did unexplorable
+(ceylon's), wilderness_hudsonsbay (huron_territory's) and wilderness_khiva (persia's). When Armenia
+fell the army died and the AI, planning round a clone's garrison, called into it. That's why it
+started with batch 2 and came "around turn 10" in any campaign: it fired whenever Armenia changed
+hands. A save drops the duplicate SGR[12] links but keeps CAI_GARRISONABLE (15 settlements still
+claimed 5794 in the crash save). The fort clone already cleared SGR[12] for the same reason
+(Oct 2); its CAI record kept CAI_GARRISONABLE too.
+
+Fix: both fields are 0 on every cloned settlement, and CAI_GARRISONABLE is 0 on cloned forts.
+`crashfix_test.empire_save` (the crash save with the 17 shared CAI_GARRISONABLE cleared) passed
+Armenia's fall in game, and later turns too. Existing campaigns started on older builds still
+carry the links; the same clearing can be applied to their saves.
