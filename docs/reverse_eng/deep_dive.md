@@ -2444,3 +2444,17 @@ was heap corruption (0xc0000374).
 
 check_factions checks both invariants. Rebuild: batch3c (S3 with the fix -> unlock -> painter
 map_poc19 -> deploy) -> add_faction -> unlock -> out/m1_wallachia.
+
+### 11.7 Faction art: what the game actually reads (2026-10-11)
+
+* The HUD / selection flags come from the folder in FACTION_FLAG_AND_COLOURS (`data\ui\flags\<x>`).
+* The 3D campaign flags (settlements, armies) use `testdata\campaignflags\flag_<texture key>.dds`
+  when it exists, and fall back to the UI folder otherwise: texture key greece has no campaign flag
+  (testdata holds 48), and greece's UI flag showed. Our first DXT3 re-encode drew plain faction
+  colour: Pillow writes a row pitch where vanilla's header has the linear size of the top level
+  (131,072 for 512 x 256 DXT3) and an RGB bit count of 32 where vanilla has 0. dds_for_game now
+  writes vanilla's header (byte-identical to flag_georgia.dds).
+* The agent coin is a registered rigid model: warscape_rigid (`agent_ID_<x>`,
+  `RigidModels/CampaignBuildings/CampaignAgentIcons/Textures`, `campaign_template_extra`) and
+  warscape_rigid_lod (LOD id, `.../agent_ID_<x>.rigid_model`, `0`, `agent_ID_<x>`); both plain
+  string tables (1,987 / 3,648 vanilla rows). add_faction copies the template's rows.

@@ -705,6 +705,20 @@ def faction_row(tpl: bytes, tkey: str, spec: FactionSpec, tpl_display: str, tpl_
     return r
 
 
+def string_rows(b: bytes, k: int) -> list[list[str]]:
+    """An unversioned table of k strings per row (01, u32 count, rows): warscape_rigid (3),
+    warscape_rigid_lod (4)."""
+    n, p, out = struct.unpack_from("<I", b, 1)[0], 5, []
+    for _ in range(n):
+        r = []
+        for _ in range(k):
+            s, p = rstr(b, p)
+            r.append(s)
+        out.append(r)
+    assert p == len(b), f"not a table of {k}-string rows"
+    return out
+
+
 def junction_rows(b: bytes) -> list[tuple[str, str]]:
     n, p, out = struct.unpack_from("<I", b, 1)[0], 5, []
     for _ in range(n):
@@ -747,7 +761,11 @@ def dds_for_game(data: bytes, fmt: str) -> bytes:
             break
         w, h = max(1, w // 2), max(1, h // 2)
     head = bytearray(levels[0][:128])
-    struct.pack_into("<I", head, 8, struct.unpack_from("<I", head, 8)[0] | 0x20000)       # DDSD_MIPMAPCOUNT
+    # as vanilla: linear size = the top level's bytes (Pillow writes a row pitch, and the game
+    # then drew the flag as plain faction colour), no RGB bit count for a FourCC format
+    struct.pack_into("<I", head, 8, struct.unpack_from("<I", head, 8)[0] | 0x80000 | 0x20000)  # LINEARSIZE, MIPMAPCOUNT
+    struct.pack_into("<I", head, 20, len(levels[0]) - 128)
+    struct.pack_into("<I", head, 88, 0)
     struct.pack_into("<I", head, 28, len(levels))
     struct.pack_into("<I", head, 108, struct.unpack_from("<I", head, 108)[0] | 0x400008)  # COMPLEX | MIPMAP
     return bytes(head) + b"".join(lv[128:] for lv in levels)
@@ -782,6 +800,9 @@ def build_db(specs: list[FactionSpec], game_data: Path, assets: Path, region_fil
 
     rng = random.Random(1700)
     new_rows, new_tech, text, flags = [], [], {}, []
+    rigid = string_rows(latest(game_data, "db\\warscape_rigid_tables\\warscape_rigid"), 3)
+    rigid_lod = string_rows(latest(game_data, "db\\warscape_rigid_lod_tables\\warscape_rigid_lod"), 4)
+    new_rigid, new_lod = [], []
     for s in specs:
         t = s.template
         tdisp = loc_text(loc, f"factions_screen_name_{t}")
@@ -811,6 +832,14 @@ def build_db(specs: list[FactionSpec], game_data: Path, assets: Path, region_fil
                     data = dds_for_game(data, "DXT1" if src.startswith("ensign") else "DXT3")
                 flags.append((dst, data))
             flags.append((f"{icons}\\agent_id_{s.key}.rigid_model", agent_model(game_data, t, s.key)))
+            # the coin is registered as a rigid model: (key, texture folder, template) and
+            # (LOD id, model path, level, key); copied from the template's agent_ID_<tex> rows
+            old, new = f"agent_ID_{t}", f"agent_ID_{s.key}"
+            rig = [r for r in rigid if r[0] == old]
+            lods = [r for r in rigid_lod if r[3] == old]
+            assert rig and lods, f"no warscape rows for {old}"
+            new_rigid += [[new] + r[1:] for r in rig]
+            new_lod += [[f"agent_{s.key}_{i}", r[1].replace(old, new), r[2], new] for i, r in enumerate(lods)]
 
     # head[:9] = marker fcfdfeff, u32 version, 01; then the row count
     table = head[:9] + struct.pack("<I", len(new_rows)) + b"".join(new_rows)
@@ -818,6 +847,11 @@ def build_db(specs: list[FactionSpec], game_data: Path, assets: Path, region_fil
     files["db\\factions_tables\\new_factions"] = table
     files["db\\technology_faction_junctions_tables\\new_factions"] = \
         struct.pack("<BI", 1, len(new_tech)) + b"".join(ws(a) + ws(b) for a, b in new_tech)
+    for tag, k, rows_ in (("warscape_rigid", 3, new_rigid), ("warscape_rigid_lod", 4, new_lod)):
+        if rows_:
+            tb = struct.pack("<BI", 1, len(rows_)) + b"".join(ws(x) for r in rows_ for x in r)
+            assert string_rows(tb, k) == rows_
+            files[f"db\\{tag}_tables\\new_factions"] = tb
     text.update(extra_text)
     files["text\\localisation.loc"] = build_loc(loc, text)
     for n, d in flags:
