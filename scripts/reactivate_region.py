@@ -994,6 +994,9 @@ def patch_startpos(root, spec: RegionSpec, cai_region_idx: int, cai_region_ai_id
     set_int(sgr.children[1], settlement_id)
     set_int(sgr.children[10], fixed(spec.capital[0]))
     set_int(sgr.children[11], fixed(spec.capital[1]))
+    # [12] is the garrison ARMY's id (0 in 75 vanilla settlements), as for forts below: kept,
+    # every clone claimed the template's army (see CAI_GARRISONABLE further down)
+    set_int(sgr.children[12], 0)
     set_str(st.children[1].children[0], f"start_pos_settlements_onscreen_name_{spec.settlement_key}")
     if spec.settlement_tier is None:
         spec.settlement_tier = st.children[2].value
@@ -1145,6 +1148,10 @@ def patch_startpos(root, spec: RegionSpec, cai_region_idx: int, cai_region_ai_id
     set_list(sit.children[3], theatre_id)
     set_int(c[3], cai_settlement)
     clear_bdi(c)
+    # [0] is the garrison's CAI_RESOURCE_MOBILE id, the AI side of SGR[12] (cleared above).
+    # Kept, every clone claimed the template's army; when the template's settlement fell the
+    # army died and the AI walked the clone's garrison into it (_purecall, +0xd96afe)
+    set_int(find(c, "CAI_GARRISONABLE").children[0], 0)
     cs = find(c, "CAI_SETTLEMENT")
     set_list(cs.children[0], settlement_bslots)
     set_int(cs.children[2], settlement_id)
@@ -2039,6 +2046,9 @@ def add_fort_obstacles(sp_root, gc: GridClones, regions_root, spec: RegionSpec, 
             c = deep_copy(src_cai)
             clear_bdi(c)
             set_int(find(c, "CAI_FORT").children[0], nid)
+            garr = find(c, "CAI_GARRISONABLE")
+            if garr is not None:   # the AI side of the garrison cleared above
+                set_int(garr.children[0], 0)
             ai_id = ids.cai()
             for j, ch in enumerate(c):
                 if isinstance(ch, ESFPrimitive) and ch.type_tag in U4_FAMILY and j < 6:
