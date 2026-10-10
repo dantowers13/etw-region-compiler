@@ -476,7 +476,10 @@ def build_db(specs: list[FactionSpec], game_data: Path, assets: Path,
             own = assets / s.key / "ui_flags"
             flags += [(f"ui\\flags\\{s.key}\\{f.name}", f.read_bytes()) for f in sorted(own.glob("*.tga"))]
 
-    files["db\\factions_tables\\new_factions"] = head[:9] + struct.pack("<BI", 1, len(new_rows)) + b"".join(new_rows)
+    # head[:9] = marker fcfdfeff, u32 version, 01; then the row count
+    table = head[:9] + struct.pack("<I", len(new_rows)) + b"".join(new_rows)
+    assert set(factions_rows(table)[1]) == {s.key for s in specs}, "new factions table does not parse"
+    files["db\\factions_tables\\new_factions"] = table
     files["db\\technology_faction_junctions_tables\\new_factions"] = \
         struct.pack("<BI", 1, len(new_tech)) + b"".join(ws(a) + ws(b) for a, b in new_tech)
     files["text\\localisation.loc"] = build_loc(loc, text)
