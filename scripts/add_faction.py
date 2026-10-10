@@ -300,6 +300,14 @@ class Startpos:
                 an = sub(d, "CAI_ANALYSER")
                 if an is None or g not in an.children[0].value:
                     continue
+                # the belief's [10] is (owner, its slot in the owner's lists): the copy's slot is
+                # the new last one, not the template's (a shared slot hung the game on exit)
+                slot = len(an.children[0].value)
+                ol = list(x[10].value)
+                for j in range(0, len(ol), 2):
+                    if ol[j] == d[2].value:
+                        ol[j + 1] = slot
+                set_list(x[10], ol)
                 set_list(an.children[0], list(an.children[0].value) + [n])
                 set_list(an.children[1], list(an.children[1].value) + [c_id, n])
                 owns = sub(d, "CAI_BDI_COMPONENT_BLOCK_OWNS")

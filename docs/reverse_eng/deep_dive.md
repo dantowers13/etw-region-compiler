@@ -2379,5 +2379,12 @@ clones an emergent template (greece) per new faction:
   start_pos_factions_description_<key>, random_localisation_strings_string_attack/defend_<key>.
 
 Builds: `out/m0_wallachia` (57 factions) and `out/m0_cap90` (Wallachia + 33 dummies = 90), both on
-batch3b_deploy; structural checks pass (sizes, relationships both ways, one analysis per AI faction
-listing every other, no AI object defined twice, analysers consistent). Untested in game.
+batch3b_deploy; `scripts/check_factions.py` checks them.
+
+In game: the first build crashed at launch (+0xab6b12): the factions table header carried its 01
+byte twice, so the row count read 257. Fixed, both 57 and 90 factions load and play (no cap at 64),
+but quitting hung (main thread in RtlAllocateHeap from the AI teardown, 4-byte allocations in a loop;
+a Task Manager dump of the WOW64 process: x86 context at *(TEB64 + 0x1488) + 4). Two causes:
+the copied global beliefs named objects in greece's manager, and **a pool object's [10] is
+(owner, slot)**, its slot in the owner's CAI_ANALYSER [0] and BLOCK_OWNS (all 74,846 links in vanilla
+obey it); the copies kept greece's slots (51 / 49 instead of the new last). Both fixed.
