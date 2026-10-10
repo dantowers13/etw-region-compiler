@@ -147,4 +147,14 @@ for it, fid in zip(fa.children, fids):
 check(len(all_chars) == len(set(all_chars)), f"{len(all_chars)} character ids unique")
 check(not bad_ai, f"every character has exactly one AI record ({len(bad_ai)} wrong: {bad_ai[:5]})")
 check(not bad_post, f"every government post names a character of its faction ({len(bad_post)} wrong)")
+# region slots belong to the region they sit in (vanilla: all 725); every region's AI
+# governorship is listed by its owner's AI faction (CAI_FACTION [10])
+bad = sum(1 for it in find_fast(root, "CAI_WORLD_REGION_SLOTS").children
+          if it[0].children[0].value != sub(it, "CAI_SITUATED").children[2].value)
+check(bad == 0, f"region slots owned by the region they sit in ({bad} wrong)")
+govs_of = {sub(it, "CAI_FACTION").children[6].value: set(sub(it, "CAI_FACTION").children[10].value)
+           for it in cwf.children if sub(it, "CAI_FACTION") is not None}
+bad = [R.children[0].value for R in owned_regs if (ci := cwr.get(R.children[4].value)) is not None
+       and sub(ci, "CAI_REGION").children[12].value not in govs_of[R.children[19].value]]
+check(not bad, f"every owned region's AI governorship is in its owner's CAI_FACTION [10] ({len(bad)} wrong: {bad[:5]})")
 print("ALL PASS" if ok else "SOME FAILED")

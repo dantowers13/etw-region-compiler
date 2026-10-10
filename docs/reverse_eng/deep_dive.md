@@ -2420,3 +2420,27 @@ then `unlock_factions.py` (portrait borrowed from georgia). Built `out/m1_wallac
 Bug found on the way: a cloned FACTION kept the template's key in CAMPAIGN_PLAYER_SETUP [2]
 (harmless while dead; unlock_factions then saw a second greece). check_factions now also checks
 governorships, region AI ownership, AI character records, posts and player-setup keys.
+
+### 11.6 M1a in game: flags, and a crash near Bucharest (2026-10-10)
+
+In game Wallachia was playable and the AI recruited and fought, but (1) it flew greece's flags and
+(2) with Ottoman troops marching on Bucharest the game hung, then crashed at +0xaa250c ([esi+4],
+esi null) from the AI region code next to the old +0xbfd80 / +0xbfdd0 sites. A second dump (22:42)
+was heap corruption (0xc0000374).
+
+* **Region slots kept their old region.** A CAI_WORLD_REGION_SLOTS item's OWNED_INDIRECT [0] is the
+  region that owns the slot; in vanilla always the one it sits in (CAI_SITUATED [2]; 725 / 725).
+  reactivate_region.transfer_startpos moved slots to a split region but left OWNED_INDIRECT on the
+  parent: 38 slots in 20 split regions (Wallachia's three still Bulgaria's). Harmless while both
+  regions had one owner; once Wallachia and Bulgaria differed the AI looked the slots up through
+  Bulgaria. Any split region would have done this on changing hands. Fixed in transfer_startpos.
+* **CAI_FACTION [10]** lists a faction's AI governorships (georgia [7502]); the new faction's was
+  empty though its region named the new one. Fixed in make_living.
+* **Flags**: FACTION_FLAG_AND_COLOURS (two copies in FACTION) = [flag folder, 3 x RGB], and the
+  factions row's field after the name list is the **texture key** (barbary_states: `barbary`,
+  khanate_khiva: `khanate`) naming `testdata\campaignflags\flag_<x>.dds`, `ensign_<x>_diffuse.dds`
+  and the agent coin `agent_id_<x>.rigid_model` (its texture a u16-length UTF-16 name inside). The
+  row's colours are float triplets. All now set from the spec, and the art ships in the pack.
+
+check_factions checks both invariants. Rebuild: batch3c (S3 with the fix -> unlock -> painter
+map_poc19 -> deploy) -> add_faction -> unlock -> out/m1_wallachia.

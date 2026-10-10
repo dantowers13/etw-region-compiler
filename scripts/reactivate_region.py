@@ -1229,6 +1229,10 @@ def transfer_startpos(root, spec: RegionSpec, cai_region_ai_id: int, R) -> None:
             set_int(sit.children[1], fixed(m.pos[1]))
             set_int(sit.children[2], cai_region_ai_id)
             set_list(sit.children[3], theatre_id)
+        # OWNED_INDIRECT is the region that owns the slot (always the one it sits in, vanilla);
+        # kept, a moved slot stayed its old region's, which crashed the AI once the two regions
+        # had different owners (deep_dive 11.6)
+        set_int(r[0].children[0], p_ai if m.stay else cai_region_ai_id)
         if m.stay:
             for sit in [r[1]] + [c for c in find(r, "CAI_REGION_SLOT").children if isinstance(c, ESFNode) and c.tag == "CAI_SITUATED"]:
                 set_int(sit.children[2], p_ai)

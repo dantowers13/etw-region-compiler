@@ -61,7 +61,12 @@ KNOWN = {
                 "CAI settlement. Fixed in reactivate_region (deep_dive 10.25; Oct 8-10 x8)",
     0x004f2c13: "read of a small bogus address (0x0002411e) through ecx (Oct 10, once, between two +0xd96afe "
                 "crashes; not analysed yet)",
-    0x0064f66f: "AI region route step: region missing from the AI region-graph map (great_plains/new_mexico, whose "
+    0x00aa250c: "[esi+4] with esi null, from the AI region code (+0xbf9ea/+0xbfb0a/+0xbf323): an AI region "
+                "lookup came back empty. Oct 10 m1_wallachia, armies nearing Bucharest: split regions' moved "
+                "slots were still OWNED_INDIRECT by their old region (38 in batch1/2; harmless until the two "
+                "regions had different owners) and the new faction's CAI_FACTION [10] lacked its AI "
+                "governorship (deep_dive 11.6)",
+    0x0064f66f:"AI region route step: region missing from the AI region-graph map (great_plains/new_mexico, whose "
                 "only land neighbours were dormant; Oct 1 new_regions_noobs; deep_dive 8.14)",
 }
 

@@ -65,6 +65,7 @@ class FactionSpec:
     protector: str | None = None   # starts as this faction's protectorate (as Crimea / Ottomans)
     people: dict = field(default_factory=dict)       # post -> (first, surname, born)
     candidates: list = field(default_factory=list)   # unposted court, in order: (first, surname, born)
+    colours: tuple = ()            # primary, secondary, tertiary RGB (FACTION_FLAG_AND_COLOURS, DB row)
 
 
 # Ministers and court as of 1700 (birth years approximate where unknown). ETW has no heir or
@@ -86,6 +87,7 @@ FACTIONS = {
         candidates=[("Constantin", "Brâncoveanu", 1683), ("Ștefan", "Brâncoveanu", 1685),
                     ("Radu", "Brâncoveanu", 1690), ("Matei", "Brâncoveanu", 1698),
                     ("Dumitrașcu", "Corbea", 1665)],
+        colours=((219, 10, 0), (249, 213, 1), (147, 8, 13)),
     ),
 }
 
@@ -213,6 +215,7 @@ class Startpos:
         self.ids = IdPool(set(self.counts))
         self.rng = random.Random(1700)
         self.text = {}             # localisation the startpos now names (character names)
+        self.tpl_colours = {}      # template key -> its 9 FACTION_FLAG_AND_COLOURS values (the DB row's)
         # looked up once: walking the whole tree per faction is slow at 30+ factions
         self.analyses = find_all_fast(root, {"CAI_DIPLOMATIC_ANALYSIS"})["CAI_DIPLOMATIC_ANALYSIS"]
         gpool = sub(find_fast(root, "CAI_INTERFACE").children, "CAI_BDI_POOL")
@@ -288,10 +291,19 @@ class Startpos:
         it = deep_copy(T_item)
         F = sub(it, "FACTION")
         remap(F, obj)
+        self.tpl_colours[spec.template] = [c.value for c in next(
+            x for x in children(T) if isinstance(x, ESFNode) and x.tag == "FACTION_FLAG_AND_COLOURS").children[1:10]]
         restring(F, {spec.template: spec.key})     # CAMPAIGN_PLAYER_SETUP names the faction too
         k = faction_key_index(F)
         set_str(F.children[k], spec.key)
         set_str(F.children[k + 1], spec.display)
+        for ffc in children(F):            # flag folder and faction colours (two copies)
+            if isinstance(ffc, ESFNode) and ffc.tag == "FACTION_FLAG_AND_COLOURS":
+                set_str(ffc.children[0], f"data\\ui\\flags\\{spec.flag_key}")
+                for j, v in enumerate(c for rgb in spec.colours for c in rgb):
+                    p = ffc.children[1 + j]                # u1 (tag 0x06), which set_int refuses
+                    assert isinstance(p.value, int) and 0 <= v < 256
+                    p.value, p.raw = v, b""
         for nad in children(F):            # name-drawing seeds, one per name list
             if isinstance(nad, ESFNode) and nad.tag == "NAME_ALLOCATION_DETAILS":
                 set_int(nad.children[1], self.rng.randrange(1 << 32))
@@ -526,6 +538,7 @@ class Startpos:
         gov_ai = xg[1].value
         n_cf, d_cf = sub(n_cwf, "CAI_FACTION"), sub(d_cwf, "CAI_FACTION")
         set_list(n_cf.children[4], [aimap[v] for v in d_cf.children[4].value if v in aimap])
+        set_list(n_cf.children[10], [gov_ai])          # its AI governorships (georgia: [7502])
         for i, c in enumerate(d_cf.children):          # the donor's AI capital field(s)
             if isinstance(c, ESFPrimitive) and not isinstance(c.value, bool) and c.value == d_cap_cai:
                 set_int(n_cf.children[i], cap_cai)
@@ -668,12 +681,27 @@ def factions_rows(b: bytes) -> tuple[bytes, dict[str, bytes], set[int]]:
     return head, rows, {r for _, _, r in starts}
 
 
-def faction_row(tpl: bytes, tkey: str, spec: FactionSpec, tpl_display: str, tpl_adj: str, row_id: int) -> bytes:
+def faction_row(tpl: bytes, tkey: str, spec: FactionSpec, tpl_display: str, tpl_adj: str, row_id: int,
+                tpl_colours: list[int]) -> bytes:
+    """The template's row with new key, row id, names, flag folder, texture key (the field after
+    the name list: flag_<x>.dds, agent_id_<x>, ensign_<x>; barbary_states uses 'barbary') and
+    colours (float triplets)."""
     r = ws(spec.key) + struct.pack("<I", row_id) + tpl[2 + 2 * len(tkey) + 4:]
     for old, new in ((tpl_display, spec.display), (tpl_adj, spec.adjective),
                      (f"data\\ui\\flags\\{tkey}", f"data\\ui\\flags\\{spec.flag_key}")):
         assert ws(old) in r, f"{old!r} not in the {tkey} row"
         r = r.replace(ws(old), ws(new), 1)
+    p = 2 + 2 * len(spec.key) + 4
+    for _ in range(5):                              # subculture, AI personality, name, adjective, name list
+        p = rstr(r, p)[1]
+    tex, q = rstr(r, p)
+    if spec.flag_key == spec.key:
+        r = r[:p] + ws(spec.key) + r[q:]
+    if spec.colours:
+        for i in range(0, 9, 3):
+            old = struct.pack("<fff", *tpl_colours[i:i + 3])
+            new = struct.pack("<fff", *spec.colours[i // 3])
+            r = r.replace(old, new)
     return r
 
 
@@ -699,8 +727,24 @@ def loc_text(loc: bytes, key: str) -> str:
     raise KeyError(key)
 
 
-def build_db(specs: list[FactionSpec], game_data: Path, assets: Path,
-             region_files: list[tuple[str, bytes]], extra_text: dict) -> list[tuple[str, bytes]]:
+def agent_model(game_data: Path, tex: str, key: str) -> bytes:
+    """The template's campaign agent coin model with its texture name (a u16-length UTF-16
+    string, 'agent_ID_<tex>_diffuse') pointed at the new faction's texture."""
+    from reactivate_region import pack_file
+    path = "rigidmodels\\campaignbuildings\\campaignagenticons\\agent_id_{}.rigid_model"
+    try:
+        b = pack_file(game_data / "models.pack", path.format(tex))
+    except KeyError:                 # emergents may have none: borrow georgia's coin
+        tex = "georgia"
+        b = pack_file(game_data / "models.pack", path.format(tex))
+    old = f"agent_ID_{tex}_diffuse"
+    i = b.find(old.encode("utf-16-le"))
+    assert i >= 2 and struct.unpack_from("<H", b, i - 2)[0] == len(old), f"no texture name in agent_id_{tex}.rigid_model"
+    return b[:i - 2] + ws(f"agent_ID_{key}_diffuse") + b[i + 2 * len(old):]
+
+
+def build_db(specs: list[FactionSpec], game_data: Path, assets: Path, region_files: list[tuple[str, bytes]],
+             extra_text: dict, tpl_colours: dict[str, list[int]]) -> list[tuple[str, bytes]]:
     fac = latest(game_data, "db\\factions_tables\\factions")
     head, rows, row_ids = factions_rows(fac)
     tech = junction_rows(latest(game_data, "db\\technology_faction_junctions_tables\\technology_faction_junctions"))
@@ -720,7 +764,7 @@ def build_db(specs: list[FactionSpec], game_data: Path, assets: Path,
         while rid in row_ids:
             rid = rng.randrange(1000, 1 << 32)
         row_ids.add(rid)
-        new_rows.append(faction_row(rows[t], t, s, tdisp, tadj, rid))
+        new_rows.append(faction_row(rows[t], t, s, tdisp, tadj, rid, tpl_colours[t]))
         new_tech += [(tk, s.key) for tk, f in tech if f == t]
         text[f"factions_screen_name_{s.key}"] = s.display
         text[f"factions_screen_adjective_{s.key}"] = s.adjective
@@ -728,8 +772,16 @@ def build_db(specs: list[FactionSpec], game_data: Path, assets: Path,
         for kind, phrase in (("attack", "You are attacking a {} force."), ("defend", "You are defending against a force of {} attackers.")):
             text[f"random_localisation_strings_string_{kind}_{s.key}"] = phrase.format(s.adjective)
         if s.flag_key == s.key:
-            own = assets / s.key / "ui_flags"
-            flags += [(f"ui\\flags\\{s.key}\\{f.name}", f.read_bytes()) for f in sorted(own.glob("*.tga"))]
+            own = assets / s.key
+            flags += [(f"ui\\flags\\{s.key}\\{f.name}", f.read_bytes()) for f in sorted((own / "ui_flags").glob("*.tga"))]
+            # the texture key now names this faction: campaign-map flag, ship ensign, agent coin
+            icons = "rigidmodels\\campaignbuildings\\campaignagenticons"
+            for src, dst in ((f"flag_{s.key}.dds", f"testdata\\campaignflags\\flag_{s.key}.dds"),
+                             (f"ensign_{s.key}_diffuse.dds", f"rigidmodels\\naval\\textures\\ensign_{s.key}_diffuse.dds"),
+                             (f"agent_id_{s.key}_diffuse.tga", f"{icons}\\textures\\agent_id_{s.key}_diffuse.tga")):
+                assert (own / src).is_file(), f"{s.key}: {own / src} missing (its texture key is now {s.key})"
+                flags.append((dst, (own / src).read_bytes()))
+            flags.append((f"{icons}\\agent_id_{s.key}.rigid_model", agent_model(game_data, t, s.key)))
 
     # head[:9] = marker fcfdfeff, u32 version, 01; then the row count
     table = head[:9] + struct.pack("<I", len(new_rows)) + b"".join(new_rows)
@@ -784,7 +836,7 @@ def main():
     for f in a.mod.iterdir():
         if f.name not in ("startpos.esf", "new_regions.pack") and f.is_file():
             shutil.copy2(f, a.out / f.name)
-    files = build_db(specs, a.game_data, a.assets, read_pack(a.mod / "new_regions.pack"), sp.text)
+    files = build_db(specs, a.game_data, a.assets, read_pack(a.mod / "new_regions.pack"), sp.text, sp.tpl_colours)
     build_pack(a.out / "new_regions.pack", files)
     print(f"wrote {a.out / 'new_regions.pack'}")
     with open(a.out / "MANIFEST.txt", "a", encoding="utf-8") as m:
