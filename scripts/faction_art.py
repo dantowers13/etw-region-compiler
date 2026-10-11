@@ -71,10 +71,11 @@ def flag_pixels(ref: Image.Image) -> np.ndarray:
 
 
 def pennant(master: Image.Image, ref: Image.Image) -> Image.Image:
-    """The master laid over a vanilla pennant's cloth pixels (stripes run down the hanging cloth),
+    """The master laid over a vanilla pennant's cloth pixels, hung from its hoist (the left edge at the
+    top, stripes running down),
     keeping the reference's alpha, finials and fold shading."""
     w, h = ref.size
-    m = np.asarray(master.convert("RGB").rotate(90, expand=True).resize((w, h), Image.LANCZOS), dtype=np.float32)
+    m = np.asarray(master.convert("RGB").rotate(-90, expand=True).resize((w, h), Image.LANCZOS), dtype=np.float32)
     a = np.asarray(ref, dtype=np.float32)
     mask = flag_pixels(ref)
     # the folds, without the reference's own pattern (georgia's crosses): its brightness with
@@ -155,7 +156,7 @@ def main():
         ens.paste(shaded(master.resize((896, 512), Image.LANCZOS), None if shade is None else
                          np.asarray(Image.fromarray((shade[..., 0] * 100).astype(np.uint8)).resize((896, 512)),
                                     dtype=np.float32)[..., None] / 100), (128, 0))
-        ens.paste(master.rotate(90, expand=True).resize((128, 512), Image.LANCZOS), (0, 0))
+        ens.paste(master.rotate(-90, expand=True).resize((128, 512), Image.LANCZOS), (0, 0))
         save_dds(ens, out / f"ensign_{a.key}_diffuse.dds")
         coin(flat, emblem).save(out / f"agent_id_{a.key}_diffuse.tga")
         made += ["12 waving frames", "hud_left", "hud_right", "small", "portrait_flags",

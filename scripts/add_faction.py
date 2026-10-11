@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import io
 import random
 import shutil
 import struct
@@ -847,6 +848,21 @@ def dds_for_game(data: bytes, fmt: str) -> bytes:
     return bytes(head) + b"".join(lv[128:] for lv in levels)
 
 
+def ui_tga(name: str, data: bytes) -> bytes:
+    """A UI flag TGA written as vanilla's: bottom-up rows; RLE (type 10) for the waving frames,
+    HUD pennants and small icon, uncompressed (type 2) for the rest; 24-bit flag_132 / mini_flag,
+    32-bit otherwise. (Uncompressed waving frames showed wrongly on the campaign selection screen.)"""
+    from PIL import Image
+    rle = name.startswith("flag_animation") or name in ("hud_left.tga", "hud_right.tga", "small.tga")
+    im = Image.open(io.BytesIO(data))
+    im = im.convert("RGB" if name in ("flag_132.tga", "mini_flag.tga") else "RGBA")
+    b = io.BytesIO()
+    im.save(b, "TGA", compression="tga_rle" if rle else None, orientation=-1)
+    out = b.getvalue()
+    assert out[2] == (10 if rle else 2) and not out[17] & 0x20, f"{name}: unexpected TGA header"
+    return out
+
+
 FLAG_ATLAS = "rigidmodels\\flags\\textures\\"
 
 
@@ -947,7 +963,8 @@ def build_db(specs: list[FactionSpec], game_data: Path, assets: Path, region_fil
             text[f"random_localisation_strings_string_{kind}_{s.key}"] = phrase.format(s.adjective)
         if s.flag_key == s.key:
             own = assets / s.key
-            flags += [(f"ui\\flags\\{s.key}\\{f.name}", f.read_bytes()) for f in sorted((own / "ui_flags").glob("*.tga"))]
+            flags += [(f"ui\\flags\\{s.key}\\{f.name}", ui_tga(f.name, f.read_bytes()))
+                      for f in sorted((own / "ui_flags").glob("*.tga"))]
             # the texture key now names this faction: campaign-map flag, ship ensign, agent coin
             icons = "rigidmodels\\campaignbuildings\\campaignagenticons"
             for src, dst in ((f"flag_{s.key}.dds", f"testdata\\campaignflags\\flag_{s.key}.dds"),
