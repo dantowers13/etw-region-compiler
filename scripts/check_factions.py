@@ -58,7 +58,7 @@ cw = find_fast(root, "CAI_WORLD")
 reg = max((c for c in cw.children if isinstance(c, ESFPrimitive) and isinstance(c.value, (list, tuple))), key=lambda c: len(c.value))
 check(len(set(reg.value)) == len(reg.value), f"AI pool registry ({len(reg.value)}) has no repeats")
 pk = dict(read_pack(d / "new_regions.pack"))
-fk = next((k for k in pk if k.lower().endswith("factions_tables" + chr(92) + "new_factions")), None)
+fk = next((k for k in pk if k.lower() == "db" + chr(92) + "factions_tables" + chr(92) + "new_factions"), None)
 check(fk is not None, "pack has a new factions table")
 if fk:
     import struct as _s

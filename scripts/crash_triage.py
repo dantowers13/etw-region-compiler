@@ -61,11 +61,10 @@ KNOWN = {
                 "CAI settlement. Fixed in reactivate_region (deep_dive 10.25; Oct 8-10 x8)",
     0x004f2c13: "read of a small bogus address (0x0002411e) through ecx (Oct 10, once, between two +0xd96afe "
                 "crashes; not analysed yet)",
-    0x00aa250c: "[esi+4] with esi null, from the AI region code (+0xbf9ea/+0xbfb0a/+0xbf323): an AI region "
-                "lookup came back empty. Oct 10 m1_wallachia, armies nearing Bucharest: split regions' moved "
-                "slots were still OWNED_INDIRECT by their old region (38 in batch1/2; harmless until the two "
-                "regions had different owners) and the new faction's CAI_FACTION [10] lacked its AI "
-                "governorship (deep_dive 11.6)",
+    0x00aa250c: "DB lookup by key failed (+0xaa2490 logs 'In table %S: %S is not a valid key', then reads the "
+                "null record): a battle with a new faction looked up random_localisation_strings "
+                "attack_/defend_<faction> (777-row table), which add_faction had not written (Oct 10-11, "
+                "Bucharest and Iasi attacked; deep_dive 11.9)",
     0x0064f66f:"AI region route step: region missing from the AI region-graph map (great_plains/new_mexico, whose "
                 "only land neighbours were dormant; Oct 1 new_regions_noobs; deep_dive 8.14)",
 }

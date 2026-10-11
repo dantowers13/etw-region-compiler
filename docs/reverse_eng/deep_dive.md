@@ -2477,3 +2477,22 @@ stack); build `out/m1_moldavia` (58 factions).
 cloth texture, which is also why the fallback flag looked red), waving frames in a vanilla frame's
 outline with a moving fold shade, hanging pennants on georgia's shapes (cloth = everything not gold
 finial or dark outline; folds = its brightness with the red lifted and blurred), ensign, coin.
+
+### 11.9 The battle crash: per-faction DB tables (2026-10-11)
+
+Attacking Iasi (and earlier Bucharest) crashed at +0xaa250c with the same stack both times, so the
+11.6 fixes were real but not the cause. +0xaa2490 is a DB lookup by key that logs "In table %S:
+'%S' is not a valid key" and then reads the null record; its caller sets up the defended
+settlement (`garrisoned_residence`). The table object had 0x309 = 777 rows: only
+`random_localisation_strings` has 777, and a new faction had no `attack_<key>` / `defend_<key>`
+row (only the text). A scan of every vanilla DB table for greece / georgia found the other
+faction-keyed tables; schemas found by parsing every row to the end of the file:
+
+| table | schema | rows added |
+| random_localisation_strings | s | attack_, defend_ |
+| building_faction_variants | s s o o o (o = u8 flag + string) | the template's (Orthodox schools) + their text |
+| ministerial_positions_by_gov_types | s s s s s | the template's 15 |
+| unit_stats_naval_crew_to_factions | 8 x s | the template's |
+| names_royalty | s s i s i i (faction, name, 1, gender, 1, id) | the ruler's and court's first names |
+
+(region tables aside; factions, technology junctions and warscape tables were already done).

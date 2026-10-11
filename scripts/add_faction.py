@@ -724,6 +724,52 @@ def faction_row(tpl: bytes, tkey: str, spec: FactionSpec, tpl_display: str, tpl_
     return r
 
 
+# Per-faction DB tables (vanilla tables naming greece / georgia; schemas found by parsing every row
+# to the end of the file): s string, o optional string (u8 flag + string), i u32. The battle-intro
+# rows were the crash when a new faction's settlement was attacked (+0xaa250c, deep_dive 11.9).
+FACTION_TABLES = {
+    "random_localisation_strings": "s",           # attack_<faction>, defend_<faction>
+    "building_faction_variants": "ssooo",         # building variant, faction, 3 optional
+    "ministerial_positions_by_gov_types": "sssss",  # faction, post, government, ?, title
+    "unit_stats_naval_crew_to_factions": "ssssssss",  # faction, 7 crew units
+    "names_royalty": "ssisii",                    # faction, name, 1, gender, 1, id
+}
+
+
+def db_rows(b: bytes, schema: str) -> tuple[bytes, list[list]]:
+    start = 13 if b[:4] == b"\xfc\xfd\xfe\xff" else 5
+    n, p, rows = struct.unpack_from("<I", b, start - 4)[0], start, []
+    for _ in range(n):
+        r = []
+        for t in schema:
+            if t == "s":
+                v, p = rstr(b, p)
+            elif t == "o":
+                f, p = b[p], p + 1
+                v = None
+                if f:
+                    v, p = rstr(b, p)
+            else:
+                v, p = struct.unpack_from("<I", b, p)[0], p + 4
+            r.append(v)
+        rows.append(r)
+    assert p == len(b), f"schema {schema} does not fit"
+    return b[:start - 4], rows
+
+
+def db_bytes(head: bytes, rows: list[list], schema: str) -> bytes:
+    out = [head, struct.pack("<I", len(rows))]
+    for r in rows:
+        for t, v in zip(schema, r):
+            if t == "s":
+                out.append(ws(v))
+            elif t == "o":
+                out.append(b"\x00" if v is None else b"\x01" + ws(v))
+            else:
+                out.append(struct.pack("<I", v))
+    return b"".join(out)
+
+
 def string_rows(b: bytes, k: int) -> list[list[str]]:
     """An unversioned table of k strings per row (01, u32 count, rows): warscape_rigid (3),
     warscape_rigid_lod (4)."""
@@ -745,6 +791,17 @@ def junction_rows(b: bytes) -> list[tuple[str, str]]:
         c, p = rstr(b, p)
         out.append((a, c))
     assert p == len(b), "technology_faction_junctions is not (string, string) rows"
+    return out
+
+
+def loc_dict(loc: bytes) -> dict[str, str]:
+    ver, n = struct.unpack_from("<II", loc, 6)
+    p, out = 14, {}
+    for _ in range(n):
+        k, p = rstr(loc, p)
+        t, p = rstr(loc, p)
+        p += 1
+        out[k] = t
     return out
 
 
@@ -911,6 +968,34 @@ def build_db(specs: list[FactionSpec], game_data: Path, assets: Path, region_fil
             assert rig and lods, f"no warscape rows for {old}"
             new_rigid += [[new] + r[1:] for r in rig]
             new_lod += [[f"agent_{s.key}_{i}", r[1].replace(old, new), r[2], new] for i, r in enumerate(lods)]
+
+    # the other tables keyed by faction: the template's rows with the new key; royal names from the
+    # spec (the ruler's and the court's first names); building variants keep the template's names
+    ftabs = {tab: db_rows(latest(game_data, f"db\\{tab}_tables\\{tab}"), sch) for tab, sch in FACTION_TABLES.items()}
+    more = {tab: [] for tab in FACTION_TABLES}
+    loc_all = loc_dict(loc)
+    for s in specs:
+        t = s.template
+        more["random_localisation_strings"] += [[f"attack_{s.key}"], [f"defend_{s.key}"]]
+        for tab, col in (("building_faction_variants", 1), ("ministerial_positions_by_gov_types", 0),
+                         ("unit_stats_naval_crew_to_factions", 0)):
+            src = [r for r in ftabs[tab][1] if r[col] == t]
+            assert src, f"{t} has no {tab} rows"
+            for r in src:
+                more[tab].append(r[:col] + [s.key] + r[col + 1:])
+                if tab == "building_faction_variants":
+                    for k, v in loc_all.items():
+                        if k.startswith("building_faction_variants_") and k.endswith(f"{r[0]}{t}"):
+                            text[k[:-len(t)] + s.key] = v
+        names = [p[0] for p in [s.people.get("faction_leader")] + list(s.candidates) if p]
+        for nm in dict.fromkeys(names):
+            more["names_royalty"].append([s.key, ascii_key(nm), 1, "m", 1, rng.randrange(1 << 32)])
+            text[f"names_royalty_name_{s.key}{ascii_key(nm)}"] = nm
+    for tab, rows_ in more.items():
+        if rows_:
+            tb = db_bytes(ftabs[tab][0], rows_, FACTION_TABLES[tab])
+            assert db_rows(tb, FACTION_TABLES[tab])[1] == rows_
+            files[f"db\\{tab}_tables\\new_factions"] = tb
 
     # head[:9] = marker fcfdfeff, u32 version, 01; then the row count
     table = head[:9] + struct.pack("<I", len(new_rows)) + b"".join(new_rows)
