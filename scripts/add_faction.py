@@ -89,6 +89,25 @@ FACTIONS = {
                     ("Dumitrașcu", "Corbea", 1665)],
         colours=((219, 10, 0), (249, 213, 1), (147, 8, 13)),
     ),
+    # Constantin Duca, prince from 1700 and Brancoveanu's son-in-law; the Cantemir brothers,
+    # Antioh (prince to 1700) and Dimitrie, are his rivals at court
+    "moldavia": FactionSpec(
+        "moldavia", "Moldavia", "Moldavian", "Principality of Moldavia",
+        donor="georgia", regions=("moldavia",), protector="ottomans",
+        people={
+            "faction_leader": ("Constantin", "Duca", 1670),
+            "head_of_government": ("Iordache", "Ruset", 1650),
+            "finance": ("Lupu", "Bogdan", 1660),
+            "army": ("Ion", "Neculce", 1672),
+            "justice": ("Nicolae", "Costin", 1660),
+            "navy": ("Manolache", "Ruset", 1665),
+            "accident": ("Antioh", "Jora", 1660),
+            "governor_europe": ("Vasile", "Costache", 1655),
+        },
+        candidates=[("Dimitrie", "Cantemir", 1673), ("Antioh", "Cantemir", 1670),
+                    ("Mihai", "Racoviță", 1660), ("Ilie", "Cantacuzino", 1665), ("Toader", "Paladi", 1665)],
+        colours=((150, 22, 28), (28, 52, 132), (222, 178, 52)),
+    ),
 }
 
 DB_PACKS = ["main.pack", "patch.pack", "patch2.pack", "patch3.pack", "patch4.pack", "patch5.pack"]

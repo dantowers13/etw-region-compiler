@@ -2463,3 +2463,17 @@ map_poc19 -> deploy) -> add_faction -> unlock -> out/m1_wallachia.
   `RigidModels/CampaignBuildings/CampaignAgentIcons/Textures`, `campaign_template_extra`) and
   warscape_rigid_lod (LOD id, `.../agent_ID_<x>.rigid_model`, `0`, `agent_ID_<x>`); both plain
   string tables (1,987 / 3,648 vanilla rows). add_faction copies the template's rows.
+
+### 11.8 Moldavia, and faction art from one master flag (2026-10-11)
+
+M1a confirmed in game: Wallachia playable, AI fine, 3D flags from the atlas. Moldavia added the
+same way: `moldavia` (vanilla region, Iasi), Constantin Duca (prince from 1700, Brancoveanu's
+son-in-law), boyars of his court, the Cantemir brothers as court candidates, Ottoman protectorate.
+Two new factions in one run is no different from one (relationships, analyses and atlas slots
+stack); build `out/m1_moldavia` (58 factions).
+
+`scripts/faction_art.py` makes the 23 art files from a master flag and a coin emblem: flat flags
+(large / 132 / mini / campaign flag) shaded with the brightness of the atlas's flag_default (a red
+cloth texture, which is also why the fallback flag looked red), waving frames in a vanilla frame's
+outline with a moving fold shade, hanging pennants on georgia's shapes (cloth = everything not gold
+finial or dark outline; folds = its brightness with the red lifted and blurred), ensign, coin.
