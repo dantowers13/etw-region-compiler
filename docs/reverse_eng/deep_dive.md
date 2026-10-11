@@ -2496,3 +2496,46 @@ faction-keyed tables; schemas found by parsing every row to the end of the file:
 | names_royalty | s s i s i i (faction, name, 1, gender, 1, id) | the ruler's and court's first names |
 
 (region tables aside; factions, technology junctions and warscape tables were already done).
+
+### 11.10 The campaign selection screen: banners and the minimap (2026-10-11)
+
+Screenshots of the Grand Campaign selector (Moldavia, Wallachia, and Saxony for comparison):
+
+* **Flag strip** (the waving `flag_animation` frames): correct for both new factions once the UI
+  TGAs were written as vanilla's (RLE for frames / HUD / small, bottom-up rows; 11.8's fix).
+* **Portrait banners** (`portrait_flags.tga`, the two hanging flags beside the leader): vanilla
+  shows the flag **upright** on each hanging cloth (Saxony: green over white, arms low centre).
+  faction_art had turned the flag 90 degrees (stripes running down); the same applies to the HUD
+  pennants and `small.tga`. Fixed: the flag is laid on unrotated.
+* **Minimap and "Starting Regions"**: Saxony's region shows green and "Starting Regions: 1";
+  Wallachia and Moldavia showed nothing and 0 although they own their regions in game. The selector
+  reads two snapshots in CAMPAIGN_PREOPEN_MAP_INFO that no tool updated:
+  - `REGION_OWNERSHIPS_BY_THEATRE`: per theatre (america / europe / india), a list of
+    (region key, owner faction key). In vanilla exactly the owned regions of that theatre
+    (REGION [22]), except baluchistan, listed under europe though its theatre is india.
+  - `FACTION_INFOS` [7]: the faction's number of starting regions (vanilla: all equal to the
+    regions it owns).
+  Our builds had left both at vanilla since batch 1: europe was missing 24 regions (every split
+  and new region), america 5, labrador / new_mexico and moldavia still showed their old owners,
+  and ten factions had wrong counts (france 8 for 15, ottomans 12 for 26). unlock_factions (the
+  last startpos step) now rebuilds both from the REGIONS_ARRAY owners, keeping vanilla's order
+  and its baluchistan placement; check_factions compares them.
+
+Status at the end of the session (2026-10-11): `out/m1_moldavia` rebuilt with the preopen refresh
+(america 47, europe 102, india 18 entries; 36 changed, 10 counts fixed) and upright banners; all
+checks pass; not yet seen in game. Known art issue: portrait_flags.tga holds two banners and
+faction_art stretches one flag across the whole image, so the left banner shows the hoist (the
+arms) and the right the fly (stripes); vanilla gives each banner the whole flag. Next: split the
+reference's alpha into its two banners and lay the full flag on each.
+
+### 11.11 Next session
+
+1. Test `out/m1_moldavia`: selector minimap / starting regions for Wallachia, Moldavia and the split
+   regions' owners (France, Ottomans), banners.
+2. faction_art: whole flag on each portrait banner (above).
+3. M1b: a starting army in Bucharest and Iasi with a general (CHARACTER_OBSTACLE in the pathfinder)
+   and the donor's agents.
+4. Flag atlas: 4 free slots left in flags3; add a new atlas page before faction 7. Ships:
+   naval_id.tai for factions with ports.
+5. Commit the faction art masters (master / coin PNGs live only in the game-dir clone's
+   out/faction_assets, which is ignored).

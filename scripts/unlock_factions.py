@@ -178,7 +178,61 @@ def unlock(root: ESFNode, all_factions: bool = False) -> list[str]:
             names.append(name)
             print(f"  unlocked: {name}")
     unlock_preopen(root, names)
+    refresh_preopen_ownership(root)
     return names
+
+
+def refresh_preopen_ownership(root) -> None:
+    """The selection screen's minimap and "Starting Regions" read two snapshots in
+    CAMPAIGN_PREOPEN_MAP_INFO (deep_dive 11.10): REGION_OWNERSHIPS_BY_THEATRE, per theatre a list of
+    (region key, owner key) = the owned regions of that theatre (REGION [22]; vanilla lists
+    baluchistan under europe, so a region keeps the theatre it is already listed under), and
+    FACTION_INFOS [7] = each faction's number of regions. Rebuilt from the REGIONS_ARRAY owners
+    (split, new and transferred regions had left both at vanilla)."""
+    key_of = {}
+    for it in find(root, "FACTION_ARRAY").children:
+        f = it[0]
+        key = find(f, "CAMPAIGN_PLAYER_SETUP").children[2].value
+        for i, c in enumerate(f.children[:14]):
+            if isinstance(c, ESFPrimitive) and c.value == key and i > 0:
+                key_of[f.children[i - 1].value] = key
+    owner, theatre = {}, {}
+    for it in find(root, "REGIONS_ARRAY").children:
+        R = find(it, "REGION")
+        if R.children[19].value in key_of:
+            owner[R.children[0].value] = key_of[R.children[19].value]
+            theatre[R.children[0].value] = R.children[22].value
+    pre = find(root, "CAMPAIGN_PREOPEN_MAP_INFO")
+    lists = {th[0].value: th[1] for th in find(pre, "REGION_OWNERSHIPS_BY_THEATRE").children}
+    listed = {x[0].value: name for name, node in lists.items() for x in node.children}
+    for r, th in theatre.items():
+        if r not in listed and th in lists:
+            listed[r] = th
+    changed = 0
+    for name, node in lists.items():
+        proto = node.children[0]
+        old = [(x[0].value, x[1].value) for x in node.children]
+        keep = [r for r, _ in old if r in owner and listed.get(r) == name]
+        keep += sorted(r for r, th in listed.items() if th == name and r in owner and r not in keep)
+        items = []
+        for r in keep:
+            x = deep_copy(proto)
+            set_str(x[0], r)
+            set_str(x[1], owner[r])
+            items.append(x)
+        node.children = items
+        changed += len(set(old) ^ {(r, owner[r]) for r in keep})
+    counts = {}
+    for r in owner:
+        counts[owner[r]] = counts.get(owner[r], 0) + 1
+    nfix = 0
+    for it in find(pre, "FACTION_INFOS").children:
+        n = counts.get(it[0].value, 0)
+        if it[7].value != n:
+            set_int(it[7], n)
+            nfix += 1
+    print(f"  preopen: region ownerships rebuilt ({', '.join(f'{k} {len(v.children)}' for k, v in lists.items())}; "
+          f"{changed} entries changed), {nfix} starting-region counts fixed")
 
 
 def main() -> None:

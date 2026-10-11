@@ -157,4 +157,17 @@ govs_of = {sub(it, "CAI_FACTION").children[6].value: set(sub(it, "CAI_FACTION").
 bad = [R.children[0].value for R in owned_regs if (ci := cwr.get(R.children[4].value)) is not None
        and sub(ci, "CAI_REGION").children[12].value not in govs_of[R.children[19].value]]
 check(not bad, f"every owned region's AI governorship is in its owner's CAI_FACTION [10] ({len(bad)} wrong: {bad[:5]})")
+# the selection screen's snapshots: per-theatre ownership lists and starting-region counts
+pre = find_fast(root, "CAMPAIGN_PREOPEN_MAP_INFO")
+owner_key = {}
+for it, fid, key in zip(fa.children, fids, keys):
+    owner_key[fid] = key
+own_now = {R.children[0].value: owner_key[R.children[19].value] for R in regs.values() if R.children[19].value in owner_key}
+listed = {x[0].value: x[1].value for th in sub(pre.children, "REGION_OWNERSHIPS_BY_THEATRE").children for x in th[1].children}
+ths = {th[0].value for th in sub(pre.children, "REGION_OWNERSHIPS_BY_THEATRE").children}
+expect = {r: o for r, o in own_now.items() if regs[r].children[22].value in ths or r in listed}
+check(listed == expect, f"preopen region ownerships match the owners ({len(set(listed.items()) ^ set(expect.items()))} differ)")
+cnt = collections.Counter(own_now.values())
+badc = [(it[0].value, it[7].value, cnt[it[0].value]) for it in sub(pre.children, "FACTION_INFOS").children if it[7].value != cnt[it[0].value]]
+check(not badc, f"FACTION_INFOS starting-region counts match ({badc[:5]})")
 print("ALL PASS" if ok else "SOME FAILED")

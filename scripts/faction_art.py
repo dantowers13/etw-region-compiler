@@ -71,11 +71,10 @@ def flag_pixels(ref: Image.Image) -> np.ndarray:
 
 
 def pennant(master: Image.Image, ref: Image.Image) -> Image.Image:
-    """The master laid over a vanilla pennant's cloth pixels, hung from its hoist (the left edge at the
-    top, stripes running down),
-    keeping the reference's alpha, finials and fold shading."""
+    """The master laid upright over a vanilla pennant's cloth pixels (as vanilla's banners show
+    their flag: Saxony green over white), keeping the reference's alpha, finials and fold shading."""
     w, h = ref.size
-    m = np.asarray(master.convert("RGB").rotate(-90, expand=True).resize((w, h), Image.LANCZOS), dtype=np.float32)
+    m = np.asarray(master.convert("RGB").resize((w, h), Image.LANCZOS), dtype=np.float32)
     a = np.asarray(ref, dtype=np.float32)
     mask = flag_pixels(ref)
     # the folds, without the reference's own pattern (georgia's crosses): its brightness with
