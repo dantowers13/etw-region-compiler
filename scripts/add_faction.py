@@ -574,6 +574,7 @@ class Startpos:
                 set_int(n_cf.children[i], cap_cai)
 
         # hand over the regions (as reactivate_region.transfer_region)
+        old_owners = set()
         for r in spec.regions:
             R = regs[r]
             old_fid, old_gov, rid = R.children[19].value, R.children[21].value, R.children[4].value
@@ -581,6 +582,7 @@ class Startpos:
             old_cwf = next(it for it in self.cwf.children
                            if sub(it, "CAI_FACTION") is not None and sub(it, "CAI_FACTION").children[6].value == old_fid)
             old_cai = old_cwf[2].value
+            old_owners.add(old_cai)
             OF = self.faction(old_key)[1]
             ofx = fac_fields(OF)
             assert rid not in (OF.children[ofx["cap1"]].value, OF.children[ofx["cap2"]].value), f"{r} is {old_key}'s capital"
@@ -612,6 +614,14 @@ class Startpos:
                     set_int(sub(it, "OWNED_DIRECT").children[0], c_id)
                     set_int(cs.children[1], c_id if r == spec.regions[0] else 0)   # capital marker
             print(f"    {r}: {old_key} -> {spec.key}")
+
+        # the AI faction's presence: CAI_FACTION [1] theatres and [2] areas (CAI_SITUATED [3] / [4])
+        # of everything it has on the map, kept up as regions change hands, never recomputed: with
+        # them empty, losing the last region never destroyed the faction and the game waited on the
+        # conqueror's turn (deep_dive 11.14). The old owner keeps what it still occupies.
+        self.set_presence(c_id)
+        for o in old_owners:
+            self.set_presence(o, prune_only=True)
 
         # protectorate: copy an existing protector/protectorate pair (Crimea and the Ottomans)
         if spec.protector:
@@ -834,6 +844,34 @@ class Startpos:
         print(f"    army {army_id:#x} in {spec.regions[0]}: general {ascii_key(first)} {ascii_key(surname)}, "
               f"{len(spec.army)} units + bodyguard; agents {', '.join(spec.agents)}; AI mobiles {mobiles}")
 
+    def set_presence(self, cai: int, prune_only: bool = False) -> None:
+        """CAI_FACTION [1] / [2]: the theatres and areas (CAI_SITUATED [3] / [4]) of the AI
+        faction's settlements and mobiles. Vanilla's lists hold all of them (plus sea areas of
+        fleets); prune_only keeps the list's order and drops only what nothing occupies now."""
+        th, ar = [], []
+        for tag, owned in (("CAI_WORLD_SETTLEMENTS", "OWNED_DIRECT"), ("CAI_WORLD_RESOURCE_MOBILES", "OWNED_DIRECT")):
+            for it in find_fast(self.root, tag).children:
+                if sub(it, owned).children[0].value != cai:
+                    continue
+                s = sub(it, "CAI_SITUATED")
+                th += [t for t in s.children[3].value if t not in th]
+                if s.children[4].value not in ar:
+                    ar.append(s.children[4].value)
+        cf = next(sub(it, "CAI_FACTION") for it in self.cwf.children if it[2].value == cai)
+        if prune_only:
+            th = [t for t in cf.children[1].value if t in th]
+            ar = [a for a in cf.children[2].value if a in ar or a not in self.land_areas()]
+        set_list(cf.children[1], th)
+        set_list(cf.children[2], ar)
+
+    def land_areas(self) -> set[int]:
+        """Areas that hold a settlement: the others in a faction's [2] are sea areas its fleets
+        sail, which pruning by settlements must not touch."""
+        if not hasattr(self, "_land"):
+            self._land = {sub(it, "CAI_SITUATED").children[4].value
+                          for it in find_fast(self.root, "CAI_WORLD_SETTLEMENTS").children}
+        return self._land
+
     def key_of(self, fid: int) -> str:
         for it in self.fa.children:
             F = sub(it, "FACTION")
@@ -950,6 +988,29 @@ FACTION_TABLES = {
     "unit_stats_naval_crew_to_factions": "ssssssss",  # faction, 7 crew units
     "names_royalty": "ssisii",                    # faction, name, 1, gender, 1, id
 }
+
+
+# The player's defeat movie: Empire.exe picks a movie event from a fixed list (game_lost_austria ..
+# game_lost_mughal, game_lost_natives) and falls back to game_lost for any other faction, looked up
+# with the faction's culture in movie_event_strings (event, culture, movie, id). Vanilla has a
+# game_lost row only for indian, so a new European faction's defeat waited forever for a movie
+# (the game hung on the conqueror's turn, deep_dive 11.13). One row per culture that lacks it; the
+# movie must exist (vanilla's own EUR_Lose_POL.bik row names a file no pack has).
+DEFEAT_MOVIES = {"european": "EUR_Lose_RUS.bik", "middle_east": "Ottoman_Lose_battle.bik"}
+
+
+def pack_names(pack: Path) -> list[str]:
+    """A pack's file names, reading only its header and index (movies.pack is gigabytes)."""
+    with open(pack, "rb") as f:
+        _, _, _, repsz, nfiles, isz = struct.unpack("<4sIIIII", f.read(24))
+        f.seek(24 + repsz)
+        idx = f.read(isz)
+    p, out = 0, []
+    for _ in range(nfiles):
+        e = idx.index(b"\0", p + 4)
+        out.append(idx[p + 4:e].decode("latin1"))
+        p = e + 1
+    return out
 
 
 def db_rows(b: bytes, schema: str) -> tuple[bytes, list[list]]:
@@ -1228,6 +1289,17 @@ def build_db(specs: list[FactionSpec], game_data: Path, assets: Path, region_fil
             tb = db_bytes(ftabs[tab][0], rows_, FACTION_TABLES[tab])
             assert db_rows(tb, FACTION_TABLES[tab])[1] == rows_
             files[f"db\\{tab}_tables\\new_factions"] = tb
+
+    mhead, movies = db_rows(latest(game_data, "db\\movie_event_strings_tables\\movie_event_strings"), "ssss")
+    have = {r[1] for r in movies if r[0] == "game_lost"}
+    next_id = max(int(r[3]) for r in movies) + 1
+    lost = [["game_lost", c, m, str(next_id + i)] for i, (c, m) in enumerate(
+        (c, m) for c, m in DEFEAT_MOVIES.items() if c not in have)]
+    if lost:
+        movies = {n.lower() for pk in game_data.glob("*.pack") for n in pack_names(pk) if n.lower().endswith(".bik")}
+        gone = [r[2] for r in lost if f"movies\\{r[2].lower()}" not in movies]
+        assert not gone, f"defeat movies not in any pack: {gone}"
+        files["db\\movie_event_strings_tables\\new_factions"] = db_bytes(mhead, lost, "ssss")
 
     # head[:9] = marker fcfdfeff, u32 version, 01; then the row count
     table = head[:9] + struct.pack("<I", len(new_rows)) + b"".join(new_rows)

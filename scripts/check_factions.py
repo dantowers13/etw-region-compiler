@@ -203,4 +203,18 @@ bad += [it[1].value for it in find_fast(root, "CAI_WORLD_UNITS").children if sub
 bad += [g.children[0].value for g in find_all_fast(root, {"CAI_GARRISONABLE"})["CAI_GARRISONABLE"]
         if (g.children[0].value and g.children[0].value not in mobs) or not set(g.children[2].value) <= set(mobs)]
 check(not bad, f"AI mobiles, units and garrisons name live objects ({len(bad)} wrong: {bad[:5]})")
+# an AI faction's presence (deep_dive 11.14): CAI_FACTION [1] / [2] hold the theatres / areas
+# (CAI_SITUATED [3] / [4]) of its settlements; empty ones kept a faction alive after its last region
+need_th, need_ar = collections.defaultdict(set), collections.defaultdict(set)
+for it in find_fast(root, "CAI_WORLD_SETTLEMENTS").children:
+    o, s = sub(it, "OWNED_DIRECT").children[0].value, sub(it, "CAI_SITUATED")
+    need_th[o] |= set(s.children[3].value)
+    need_ar[o].add(s.children[4].value)
+key_of_fid = dict(zip(fids, keys))
+bad = [(key_of_fid.get(sub(it, "CAI_FACTION").children[6].value, it[2].value),
+        sorted(need_th[it[2].value] - set(sub(it, "CAI_FACTION").children[1].value)),
+        sorted(need_ar[it[2].value] - set(sub(it, "CAI_FACTION").children[2].value)))
+       for it in cwf.children if sub(it, "CAI_FACTION") is not None]
+bad = [b for b in bad if b[1] or b[2]]
+check(not bad, f"AI factions list the theatres / areas of their settlements ({len(bad)} wrong: {bad[:5]})")
 print("ALL PASS" if ok else "SOME FAILED")
