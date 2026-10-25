@@ -2353,6 +2353,47 @@ Build: `split_region.py --split batch3` on `batch2b_split` -> `batch3d_split` ->
 `batch3d_s3_unlocked` -> painter -> `map_poc20`. (Console: run with PYTHONIOENCODING=utf-8, the
 logs print Aydın and Hüdavendigâr.)
 
+### 10.27 Moving an area between regions: the Musandam tip (2026-10-25)
+
+Jawf (URR's `wilderness_arabia`) had a stray second area, 5.3 units at the Musandam tip, so the
+game drew a Jawf border at the top of the Oman peninsula. Its six cells are coastal header cells:
+mostly impassable rock (type 2, path id 1023) and sea, with four slivers of Jawf land (type 0, pid
+3, up to 1.06). A `src` / `dst` / `point` spec in `SPLITS` (`musandam`, last in `BATCH3`) moves
+it with `move_area_*`:
+
+* regions.esf: the area record leaves src's `areas` and is appended to dst's. Nothing about its
+  geometry changes (its faces are its own landmass group, asserted), so only the names change:
+  every stored neighbour run, quadtree edge tag and leaf default naming (src, area) becomes
+  (dst, new index), and src's later areas move up one. Musandam: 3 outlines, 3 leaves.
+* startpos: the area's HLCI ([region ai, class, [area index], x, y]) moves to dst's
+  CAI_REGION [1] and is renumbered; src's remaining HLCIs are renumbered.
+* pathfinding: src's land records inside the area are relabelled dst's; impassable records stay.
+  Record counts are unchanged, so no startpos node id moves (none of the cells holds an obstacle
+  entry).
+
+Left: the AI boundary Oman-Jawf cloned at the split is now stale (Oman no longer touches Jawf),
+like Hejaz's to Jawf before the land link. This is the tool for the border audit's moves.
+
+**End-turn crash (first m1d_balance test, playing the Ya'rubids):** Empire.exe+0x884087,
+`movzx eax, word [eax+0x44]` with eax 0x40, in the function that walks
+CAI_BORDER_PATROL_ANALYSIS_AREA_SPECIFIC / PATROL_POINT (frames identified by the tags each
+function names). The patrol analysis is per region (body [0] = region ai) with an entry per area
+`[region ai, area index, points, x, y]`; Jawf's still had `[497, 1]`, the Musandam tip's, after
+Jawf was left with one area: the AI read through a null area. The move now takes that entry to
+dst (area index renumbered, src's later ones moved up), drops dst from the moved points'
+neighbour lists and src from dst's points within 3 units. check_factions checks every patrol entry's
+area index against the region's HLCI count (one HLCI per area); vanilla has five exceptions
+(huron_territory, great_lakes, bahamas), allowed.
+
+**Minimap borders:** the minimap's region outlines are black pixels (palette entry 255) baked
+into europe_lookup.tga, round every vanilla region against neighbours and sea; painted regions
+(splits, Arabia, Khiva...) had none. `repaint_lookup` now outlines every painted pixel that
+touches another colour (one pixel wide: between two painted pixels only one draws; void land is
+never outlined itself), 1,295 pixels. And what is left of `arabia` (the Rub' al Khali) is
+painted the void colour: vanilla painted all of Arabia in (207, 190, 106), Jawf's colour, so the
+minimap showed it as Jawf's owner's (`LOOKUP_VOID_REPAINT`; only arabia: lakes, rivers,
+impassable and the other void records keep vanilla's colours).
+
 ## 11. New factions (plan, 2026-10-10)
 
 Goal (user): 20-30 brand-new factions on top of all 56 existing ones, keeping every emergent
@@ -2743,3 +2784,70 @@ The same check found an older bug: `unexplorable` (a reactivated region, the Net
 settlement in five theatres `[27, 34, 35, 36, 48]`; no vanilla settlement is in 27, 36 or 48 (small
 theatres of 5-8 regions). Its CAI_SITUATED [3] came whole from a template. Not yet fixed; possibly
 related to the East Indies (Palapo) hang of 10-06.
+
+### 11.15 The Ottoman balance: five factions and Basra (2026-10-25)
+
+After batch 2 and Arabia the Ottomans held 29 regions (vanilla 12; France 15 next). The user's
+cut, on c.1700 lines (none of these lands was directly Ottoman, or held by any colonial power):
+
+| faction (key) | regions | status | ruler |
+|---|---|---|---|
+| Sharifate of Mecca (`mecca`) | Hejaz | Ottoman protectorate | Sharif Sa'd ibn Zayd (1695-1702) |
+| Emirate of Diriyah (`diriyah`) | Najd | independent | Saud ibn Muhammad of the Al Muqrin |
+| Banu Khalid (`banu_khalid`) | al-Hasa, Jawf | independent | Sa'dun ibn Muhammad Al Ghurayr (1691-1722) |
+| Ya'rubid Imamate (`yarubid`) | Oman | independent | Imam Saif bin Sultan I (1692-1711) |
+| Mamluk Egypt (`mamluk_egypt`) | Egypt | Ottoman protectorate | Ibrahim Bey Abu Shanab (Qasimi) |
+
+and Basra to the Safavids (their occupation of 1697-1701), a `TRANSFERS` row. Ottomans now 22,
+with four vassals (Wallachia, Moldavia, Mecca, Egypt). The vanilla `mamelukes` emergent stays.
+
+* Template `mamelukes` (empty Muslim emergent: sc_mideast_islamic, names_muslim_general), donor
+  `morocco` (13-man court with georgia's posts, a General over its capital garrison, an assassin
+  in the field and an Eastern scholar). `give_army` now takes the donor's agents by type wherever
+  they stand (placed in the new capital, LOCOMOTABLE [2..3] cleared as for an agent in a
+  settlement).
+* Armies (5 units with the general): Bedouin camelry, desert warriors, Islamic / fellahin
+  swordsmen and musketeers, hillmen musketeers (all copied from vanilla units); Mamluk Egypt's
+  `mameluks`, which no vanilla army holds, are a renamed copy of `deli_scouts` (`UNIT_STAND_INS`:
+  same 60 men and eastern_officer, per unit_stats_land).
+* `agent_model` reads the texture name the template's coin model carries: mamelukes' says
+  `agent_ID_mameluks_diffuse`.
+* Selection portraits borrowed from Morocco (`unlock_factions.PORTRAIT_FROM`).
+* Flags drawn as masters (assets/factions/<key>/master.png): Hashemite crimson with gold bands;
+  green with a white hoist and sword; white hoist and serrated maroon fly (the Gulf style); the
+  Imamate's red with a khanjar over crossed swords; the Mamluks' yellow with a white crescent.
+* **Flag atlas:** seven new factions need seven campaign-flag slots; flags3.dds (2048 x 1024, 16
+  slots, 10 vanilla) had six. `campaign_flag_atlas` now grows it to 2048 x 2048 like flags0-2
+  when it runs out: each mip level keeps its DXT1 block rows and gains blank ones, the header's
+  height and linear size are updated, and flags3's .tai entries get v / height halved (they are
+  fractions of the page). Tested: every vanilla flags3 flag keeps its pixels at its new
+  coordinates; 22 slots free in all.
+* `transfer_region` (Basra) now renames the buildings' owner key and adds the region's theatre /
+  area to the new owner's AI presence lists (11.14).
+
+Build `out/m1d_balance` (batch3d_deploy with Basra -> Safavids + the seven new factions); check
+ALL PASS but the old `unexplorable` theatres. To test: the selection screen (seven new factions),
+a few turns (the AI with seven more factions), flags on the campaign map (the grown atlas page),
+battles with the new units, Basra Persian.
+
+**Second test (2026-10-25, Ya'rubids): minimap good, crash after two turns.** Two dumps 33 s apart:
+`+0x83c9c3` (pid 26028, the crash) is a linear search `for (p = begin; p != end; ++p) if (*p == x)`
+whose end pointer is garbage (0xc1dc5d90): the container's header is dead or overwritten;
+`+0x4f2c13` (pid 30032, loading the turn-2 autosave, "Creating campaign env for loaded game")
+walks a list calling each element's scalar deleting destructor (`push 1; call [vtbl]`) and meets a
+bad element: a double delete. Same site as once on 10-10 between the shared-garrison crashes.
+Not identified. Ruled out statically: the save passes every check; no object id from the base is
+owned by more than one record after the build (all 23 that occur more often are positions,
+capital / settlement ids and one shared belief constant); the new agents carry no saved zone
+outline; only the border patrol analysis among Jawf's / Oman's beliefs is per area. One defect
+found and fixed: Mamluk Egypt started with `mameluks`, which units_to_exclusive_faction_permissions
+gives only to the mamelukes and Ottomans (`FactionSpec.recruit` now writes the row). Save kept as
+`out/crash_saves/yarubid_crash_20261025_2227.empire_save`. If it recurs: bisect the build (the base
+with Wallachia / Moldavia only, then + the five Arabian / Egyptian factions, then one at a time).
+
+**Selection-screen map:** `europe_map.tga` (490 x 300 parchment, the lookup's grid, loose in
+data/campaign_maps/global_map) carries the region borders as brown lines. `paint_parchment` draws
+every border pixel repaint_lookup added that separates two land regions (or land and void) in
+vanilla's line colour, the median under vanilla's own land-land border pixels, (191, 177, 140);
+coasts are left to the parchment's pale sea. Shipped in the pack as
+`campaign_maps\global_map\europe_map.tga`. 750 pixels.
