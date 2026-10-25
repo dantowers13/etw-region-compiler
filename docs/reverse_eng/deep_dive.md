@@ -2851,3 +2851,33 @@ every border pixel repaint_lookup added that separates two land regions (or land
 vanilla's line colour, the median under vanilla's own land-land border pixels, (191, 177, 140);
 coasts are left to the parchment's pale sea. Shipped in the pack as
 `campaign_maps\global_map\europe_map.tga`. 750 pixels.
+
+## 12. Batch 4: Scandinavia, the islands, then the border audit (plan, 2026-10-25)
+
+Survey of the Europe theatre (game-dir `out/split_planning_europe`: `survey.json`, `view_med.png`,
+`view_atlantic.png`, `view_scandinavia.png`; island areas of other regions outlined red). The
+giants: Sweden 3,418, Norway 3,174, Finland 1,935 (a typical European region is 300-500).
+Decisions (user):
+
+* **Scandinavia, 10 regions** on the period's own lines (the eve of the Great Northern War):
+  Denmark-Norway: Akershus (Christiania, the existing `norway`), Bergenhus (Bergen, Stavanger),
+  Trondhjem (with Nordland and Finnmark). Sweden: Svealand (the existing `sweden`, Stockholm,
+  Uppsala, Karlstad), Gotaland (Gothenburg, Linkoping), Skane (Malmo; Swedish since 1658,
+  Denmark's war aim), Norrland (Sundsvall, Umea), Lapland (Lulea; fur and iron). Finland: Finland
+  (Abo, Helsingfors), Ostrobothnia (Vasa, Uleaborg).
+* **Bornholm** (an island area of Sweden's) to Denmark, Danish since 1660 (`move_area`).
+* **Holstein-Gottorp**, a new faction on Schleswig and Holstein carved from Denmark's south:
+  Sweden's ally, whose quarrel with Denmark began the war (vanilla's factions table already has a
+  `holstein_gottorp` row).
+* **Islands:** Sicily from Naples (Spanish), the Balearics from Spain, an Aegean Islands region
+  (the Ottoman Archipelago: Rhodes, the Cyclades and the islands off Anatolia, gathered from the
+  regions that hold them now), Madeira from Portugal. Already right: Corsica, Sardinia, Malta,
+  Crete, Cyprus, Iceland (Danish), the Morea and its Ionian islands (Venetian). Not on the map: the
+  Faroes, the Azores.
+* **Order:** the new regions first, drawn to the audit's standards (along rivers and ridges,
+  smoothed, no ruler lines), then the **border audit** of everything: every border rendered over
+  the painted terrain with automatic flags (long straight runs, borders that ignore rivers and
+  ridges, slivers, exclaves such as Spain's piece north of the Pyrenees by Andorra, towns on a
+  border, borders without a passable crossing, stale AI boundaries such as Oman-Jawf). Our own
+  splits are rebuilt from their specs; stray pieces move with `move_area`; vanilla-only borders
+  need a land-transfer tool, built only if the audit asks for it.
