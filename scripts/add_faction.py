@@ -20,6 +20,10 @@ M0 (deep_dive 11.3): factions start with no land. Each one is a clone of a templ
 The per-pair AI beliefs (attitude analyses, relation timelines) are left for the engine to
 build: Lord's new factions lack the timelines and play.
 
+M1 makes a faction living: regions, a court cloned from a living donor (make_living), and (M1b)
+the donor's capital garrison and agents cloned into the new capital with the spec's units
+(give_army).
+
 DB rows go into the region pack beside its own tables: factions (the template's row, new key,
 names, flag path and row id), technology_faction_junctions (the template's rows), and text.
 Flags come from out/faction_assets/<key>/ui_flags if present, else the faction shows the template's.
@@ -68,6 +72,10 @@ class FactionSpec:
     people: dict = field(default_factory=dict)       # post -> (first, surname, born)
     candidates: list = field(default_factory=list)   # unposted court, in order: (first, surname, born)
     colours: tuple = ()            # primary, secondary, tertiary RGB (FACTION_FLAG_AND_COLOURS, DB row)
+    # M1b: the donor's capital garrison (general, army) and its agents, cloned into the capital
+    general: tuple = ()            # (first, surname, born); no general -> no army
+    army: tuple = ()               # unit keys after the general's bodyguard, each a copy of a vanilla unit
+    agents: dict = field(default_factory=dict)       # donor agent type (rake, gentleman) -> (first, surname, born)
 
 
 # Ministers and court as of 1700 (birth years approximate where unknown). ETW has no heir or
@@ -90,6 +98,10 @@ FACTIONS = {
                     ("Radu", "Brâncoveanu", 1690), ("Matei", "Brâncoveanu", 1698),
                     ("Dumitrașcu", "Corbea", 1665)],
         colours=((219, 10, 0), (249, 213, 1), (147, 8, 13)),
+        # boyar horse, the seimeni (mercenary musketeers) and the dorobanti
+        general=("Iordache", "Crețulescu", 1672),
+        army=("euro_provincial_cavalry", "armed_peasantry_semenys", "euro_militia_infantry", "euro_militia_infantry"),
+        agents={"rake": ("Staicu", "Bucșanu", 1660), "gentleman": ("Radu", "Popescu", 1655)},
     ),
     # Constantin Duca, prince from 1700 and Brancoveanu's son-in-law; the Cantemir brothers,
     # Antioh (prince to 1700) and Dimitrie, are his rivals at court
@@ -109,6 +121,10 @@ FACTIONS = {
         candidates=[("Dimitrie", "Cantemir", 1673), ("Antioh", "Cantemir", 1670),
                     ("Mihai", "Racoviță", 1660), ("Ilie", "Cantacuzino", 1665), ("Toader", "Paladi", 1665)],
         colours=((150, 22, 28), (28, 52, 132), (222, 178, 52)),
+        # light horse, the seimeni and the militia; the gentleman is the chronicler Axinte Uricariul
+        general=("Bogdan", "Balș", 1665),
+        army=("cossack_cavalry", "armed_peasantry_semenys", "euro_militia_infantry", "euro_militia_infantry"),
+        agents={"rake": ("Tudosie", "Dubău", 1660), "gentleman": ("Axinte", "Uricariul", 1670)},
     ),
 }
 
@@ -507,15 +523,8 @@ class Startpos:
             ch = sub(c, "CHARACTER")
             ptype = new_posts.get(ch.children[2].value)
             who = spec.people.get(ptype) if ptype else (cands.pop(0) if cands else None)
-            if who is None:
-                continue
-            first, surname, born = who
-            det = sub(ch.children, "CHARACTER_DETAILS")
-            locs = [x for x in det.children if isinstance(x, ESFNode) and x.tag == "CAMPAIGN_LOCALISATION"]
-            set_str(locs[0].children[0], self.name_key(spec.key, first))
-            set_str(locs[1].children[0], self.name_key(spec.key, surname) if surname else "")
-            set_str(det.children[4], "")
-            set_int(next(x for x in det.children if isinstance(x, ESFNode) and x.tag == "DATE").children[0], born)
+            if who is not None:
+                self.name_character(ch, spec.key, *who)
         king = spec.people["faction_leader"][0]
         mon = fam.children[0]
         rkey = f"names_royalty_name_{spec.key}{ascii_key(king)}"
@@ -629,6 +638,202 @@ class Startpos:
         print(f"    court of {len(keep)} from {spec.donor}, governorship {new_gpost:#x} (AI {gov_ai}), "
               f"{len(d_cchars)} AI characters")
 
+    # ── M1b: an army and agents ──────────────────────────────────────────────
+
+    def give_army(self, spec: FactionSpec, fid: int, c_id: int) -> None:
+        """The donor's capital garrison cloned into the new faction's capital: the general (with his
+        bodyguard unit), the ARMY with the spec's units, the agents beside it, and their AI records
+        (deep_dive 11.12). Georgia's garrison is the pattern:
+
+          settlement   SGR[12] = army id, SGR[14] = agent character ids
+          ARMY         MILITARY_FORCE [army id, general id], [4] army id, [5] settlement id;
+                       each unit's UNIT[4] its id (the bodyguard's UNIT[10] the general)
+          CHARACTER    [2] / DETAILS[10] own id; a general's [4] army, [5] bodyguard unit;
+                       an agent's [7] the settlement; LOCOMOTABLE [0..1] (general also [2..3]) the
+                       settlement's position
+          AI           one CAI_RESOURCE_MOBILE per army and per agent (situated as the settlement,
+                       [1] / [2] the settlement's AI id), CAI_UNIT [commander AI, unit, mobile],
+                       CAI_CHARACTER [mobile, bodyguard AI unit, mobile, character]; the mobiles are
+                       listed by CAI_FACTION [3], the capital's CAI_REGION [9], its theatre's THEATRE
+                       [1] and the settlement's CAI_GARRISONABLE [0] / [2]
+
+        The copies' belief caches are cleared, as for cloned settlements: the engine builds its
+        analyses of them. The general's saved zone (CHARACTER [11], and his CHARACTER_OBSTACLE in the
+        pathfinder) is left out; the game recomputes a zone when the unit is selected or moves."""
+        D, d_fid = self.faction(spec.donor)[1:]
+        N = self.faction(spec.key)[1]
+        regs = {sub(it, "REGION").children[0].value: sub(it, "REGION") for it in find_fast(self.root, "REGIONS_ARRAY").children}
+        rid_key = {R.children[4].value: k for k, R in regs.items()}
+
+        def garrison(R):
+            return sub(R.children[5].children, "SIEGEABLE_GARRISON_RESIDENCE")
+
+        d_sgr = garrison(regs[rid_key[D.children[fac_fields(D)["cap1"]].value]])
+        n_sgr = garrison(regs[spec.regions[0]])
+        assert n_sgr.children[12].value == 0 and not n_sgr.children[14].value, f"{spec.regions[0]} already has a garrison"
+        sett, x, y = n_sgr.children[1].value, n_sgr.children[10].value, n_sgr.children[11].value
+        d_army_id, d_agent_ids = d_sgr.children[12].value, list(d_sgr.children[14].value)
+        d_army = next(a for a in sub(D.children, "ARMY_ARRAY").children if a[0].children[0].children[0].value == d_army_id)
+        d_gen_id = d_army[0].children[0].children[1].value
+        d_chars = {sub(c, "CHARACTER").children[2].value: c for c in sub(D.children, "CHARACTER_ARRAY").children}
+
+        # one vanilla unit of each key to copy (the donor's first); the bodyguard is the donor general's
+        units = {}
+        for it in [d_army] + [a for it2 in self.fa.children for a in sub(sub(it2, "FACTION").children, "ARMY_ARRAY").children]:
+            for u in it[0].children[1].children:
+                U = sub(u[0], "UNIT")
+                if U is not None:
+                    units.setdefault(U.children[0].children[0].value, u)
+        bodyguard = next(u for u in d_army[0].children[1].children
+                         if sub(u[0], "UNIT") is not None and sub(u[0], "UNIT").children[10].value == d_gen_id)
+        missing = [k for k in spec.army if k not in units]
+        assert not missing, f"{spec.key}: no vanilla unit to copy for {missing}"
+
+        army_id, gen_id = self.ids.obj(), self.ids.obj()
+        first, surname, born = spec.general
+
+        # the army and its units
+        army = deep_copy(d_army)
+        A = army[0]
+        mf = A.children[0]
+        set_int(mf.children[0], army_id)
+        set_int(mf.children[1], gen_id)
+        set_int(A.children[4], army_id)
+        set_int(A.children[5], sett)
+        uids = []
+        A.children[1].children = [deep_copy(bodyguard)] + [deep_copy(units[k]) for k in spec.army]
+        for i, u in enumerate(A.children[1].children):
+            U = sub(u[0], "UNIT")
+            uids.append(self.ids.obj())
+            set_int(U.children[4], uids[-1])
+            set_int(U.children[10], gen_id if i == 0 else 0)
+            cd = U.children[2]
+            set_str(cd.children[2], spec.key)
+            if i == 0:          # the bodyguard's commander is the general
+                set_str(cd.children[0].children[0], self.name_key(spec.key, first))
+                set_str(cd.children[1].children[0], self.name_key(spec.key, surname))
+        sub(N.children, "ARMY_ARRAY").children.append(army)
+
+        # the general and the agents
+        chars = sub(N.children, "CHARACTER_ARRAY")
+        new_chars = {}            # donor character id -> (new id, its CHARACTER)
+        for d_id, who in [(d_gen_id, spec.general)] + [
+                (a, spec.agents[ctype]) for a in d_agent_ids
+                if (ctype := sub(d_chars[a], "CHARACTER").children[3].value) in spec.agents]:
+            c = deep_copy(d_chars[d_id])
+            ch = sub(c, "CHARACTER")
+            new_id = gen_id if d_id == d_gen_id else self.ids.obj()
+            set_int(ch.children[2], new_id)
+            set_int(sub(ch.children, "CHARACTER_DETAILS").children[10], new_id)
+            restring(ch, {spec.donor: spec.key})
+            self.name_character(ch, spec.key, *who)
+            loc = ch.children[0]
+            set_int(loc.children[0], x)
+            set_int(loc.children[1], y)
+            if d_id == d_gen_id:
+                set_int(loc.children[2], x)
+                set_int(loc.children[3], y)
+                set_int(ch.children[4], army_id)
+                set_int(ch.children[5], uids[0])
+                set_list(ch.children[11], [])
+            else:
+                set_int(ch.children[7], sett)
+            chars.children.append(c)
+            new_chars[d_id] = (new_id, ch)
+        agent_ids = [new_chars[a][0] for a in d_agent_ids if a in new_chars]
+        set_int(n_sgr.children[12], army_id)
+        set_list(n_sgr.children[14], agent_ids)
+
+        # AI: mobiles, units, characters
+        cw = {t: find_fast(self.root, t) for t in ("CAI_WORLD_RESOURCE_MOBILES", "CAI_WORLD_UNITS", "CAI_WORLD_CHARACTERS",
+                                                   "CAI_WORLD_SETTLEMENTS", "CAI_WORLD_REGIONS", "CAI_WORLD_THEATRES")}
+        d_cchar = {sub(it, "CAI_CHARACTER").children[3].value: it for it in cw["CAI_WORLD_CHARACTERS"].children
+                   if sub(it, "CAI_CHARACTER") is not None and sub(it, "CAI_CHARACTER").children[3].value in new_chars}
+        d_mob = {it[3].value: it for it in cw["CAI_WORLD_RESOURCE_MOBILES"].children
+                 if it[3].value in {sub(x, "CAI_CHARACTER").children[0].value for x in d_cchar.values()}}
+        d_army_mob = next(m for m in d_mob.values() if sub(m, "CAI_RESOURCE_MOBILE").children[10].value == d_army_id)
+        d_units = [it for it in cw["CAI_WORLD_UNITS"].children if sub(it, "CAI_UNIT").children[2].value == d_army_mob[3].value]
+        d_bg_ai = next(it for it in d_units if sub(it, "CAI_UNIT").children[0].value)
+        d_unit_ai = next(it for it in d_units if not sub(it, "CAI_UNIT").children[0].value)
+        cs = next(it for it in cw["CAI_WORLD_SETTLEMENTS"].children if sub(it, "CAI_SETTLEMENT").children[2].value == sett)
+        sett_ai, situated = cs[3].value, sub(cs, "CAI_SITUATED")
+        gar = sub(cs, "CAI_GARRISONABLE")
+        assert gar.children[0].value == 0 and not gar.children[2].value, f"{spec.regions[0]}'s AI settlement has a garrison"
+
+        def ai_copy(src):
+            x_ = deep_copy(src)
+            clear_bdi(x_)
+            for i, c in enumerate(x_):      # owns nothing: BLOCK_OWNS empty, its count (next field) 0
+                if isinstance(c, ESFNode) and c.tag == "CAI_BDI_COMPONENT_BLOCK_OWNS":
+                    c.children = []
+                    set_int(x_[i + 1], 0)
+            return x_
+
+        mobiles, ai_chars = [], []
+        for d_id, (new_id, ch) in new_chars.items():
+            dc = d_cchar[d_id]
+            general = d_id == d_gen_id
+            mob_id, char_ai = self.ids.cai(), self.ids.cai()
+            m = ai_copy(d_army_mob if general else d_mob[sub(dc, "CAI_CHARACTER").children[0].value])
+            set_int(m[3], mob_id)
+            set_int(sub(m, "OWNED_DIRECT").children[0], c_id)
+            m[next(i for i, c in enumerate(m) if isinstance(c, ESFNode) and c.tag == "CAI_SITUATED")] = deep_copy(situated)
+            crm = sub(m, "CAI_RESOURCE_MOBILE")
+            set_int(crm.children[0], char_ai)
+            set_list(crm.children[4], [char_ai])
+            if general:
+                unit_ai = [self.ids.cai() for _ in uids]
+                set_int(crm.children[1], sett_ai)          # the settlement it garrisons
+                set_list(crm.children[5], unit_ai)
+                set_int(crm.children[10], army_id)
+                for i, (uid, uai) in enumerate(zip(uids, unit_ai)):
+                    u = ai_copy(d_bg_ai if i == 0 else d_unit_ai)
+                    set_int(u[1], uai)
+                    cu = sub(u, "CAI_UNIT")
+                    set_int(cu.children[0], char_ai if i == 0 else 0)
+                    set_int(cu.children[1], uid)
+                    set_int(cu.children[2], mob_id)
+                    cw["CAI_WORLD_UNITS"].children.append(u)
+            else:
+                set_int(crm.children[2], sett_ai)          # the settlement it is in
+            cw["CAI_WORLD_RESOURCE_MOBILES"].children.append(m)
+            a = ai_copy(dc)
+            set_int(sub(a, "OWNED_INDIRECT").children[0], c_id)
+            set_int(a[2], char_ai)
+            cc = sub(a, "CAI_CHARACTER")
+            set_int(cc.children[0], mob_id)
+            set_int(cc.children[1], unit_ai[0] if general else 0)
+            set_int(cc.children[2], mob_id)
+            set_int(cc.children[3], new_id)
+            cw["CAI_WORLD_CHARACTERS"].children.append(a)
+            mobiles.append(mob_id)
+            ai_chars.append(char_ai)
+
+        set_int(gar.children[0], mobiles[0])
+        set_list(gar.children[2], mobiles[1:])
+        n_cf = next(sub(it, "CAI_FACTION") for it in self.cwf.children
+                    if sub(it, "CAI_FACTION") is not None and sub(it, "CAI_FACTION").children[6].value == fid)
+        set_list(n_cf.children[3], list(n_cf.children[3].value) + mobiles)
+        set_list(n_cf.children[4], list(n_cf.children[4].value) + ai_chars)
+        cr = sub(next(it for it in cw["CAI_WORLD_REGIONS"].children if it[2].value == situated.children[2].value), "CAI_REGION")
+        set_list(cr.children[9], list(cr.children[9].value) + mobiles)
+        for t in cw["CAI_WORLD_THEATRES"].children:
+            if t[1].value in situated.children[3].value:
+                T = sub(t, "THEATRE")
+                set_list(T.children[1], list(T.children[1].value) + mobiles)
+
+        # nothing of the donor's garrison may be left in the copies
+        donor = ({d_army_id, d_gen_id, *d_agent_ids, d_army_mob[3].value, *d_mob, *(it[1].value for it in d_units),
+                  *(it[2].value for it in d_cchar.values())}
+                 | {sub(u[0], "UNIT").children[4].value for u in d_army[0].children[1].children if sub(u[0], "UNIT")}
+                 | {sub(units[k][0], "UNIT").children[4].value for k in spec.army})
+        added = [army] + [c for c in chars.children[-len(new_chars):]] + cw["CAI_WORLD_RESOURCE_MOBILES"].children[-len(mobiles):] \
+            + cw["CAI_WORLD_UNITS"].children[-len(uids):] + cw["CAI_WORLD_CHARACTERS"].children[-len(mobiles):]
+        leak = {v for x_ in added for v in int_counts(x_) if v in donor}
+        assert not leak, f"{spec.key}: donor garrison ids left in the copies: {sorted(leak)[:10]}"
+        print(f"    army {army_id:#x} in {spec.regions[0]}: general {ascii_key(first)} {ascii_key(surname)}, "
+              f"{len(spec.army)} units + bodyguard; agents {', '.join(spec.agents)}; AI mobiles {mobiles}")
+
     def key_of(self, fid: int) -> str:
         for it in self.fa.children:
             F = sub(it, "FACTION")
@@ -641,6 +846,15 @@ class Startpos:
         key = f"names_name_names_{faction}{ascii_key(name)}"
         self.text[key] = name
         return key
+
+    def name_character(self, ch, faction: str, first: str, surname: str, born: int) -> None:
+        """A CHARACTER's first name and surname (CAMPAIGN_LOCALISATION keys) and birth year."""
+        det = sub(ch.children, "CHARACTER_DETAILS")
+        locs = [x for x in det.children if isinstance(x, ESFNode) and x.tag == "CAMPAIGN_LOCALISATION"]
+        set_str(locs[0].children[0], self.name_key(faction, first))
+        set_str(locs[1].children[0], self.name_key(faction, surname) if surname else "")
+        set_str(det.children[4], "")
+        set_int(next(x for x in det.children if isinstance(x, ESFNode) and x.tag == "DATE").children[0], born)
 
 
 # ─── DB, text, flags ──────────────────────────────────────────────────────────
@@ -1066,6 +1280,8 @@ def main():
         new = sp.add(s)
         if s.donor:
             sp.make_living(s, new["fid"], new["cai"])
+            if s.general:
+                sp.give_army(s, new["fid"], new["cai"])
     unlock(root)        # new factions selectable; selection screen's owners / region counts (deep_dive 11.10)
     data = ESFWriter(root, r.tag_names, r.timestamp).to_bytes()
     (a.out / "startpos.esf").write_bytes(data)

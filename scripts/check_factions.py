@@ -170,4 +170,37 @@ check(listed == expect, f"preopen region ownerships match the owners ({len(set(l
 cnt = collections.Counter(own_now.values())
 badc = [(it[0].value, it[7].value, cnt[it[0].value]) for it in sub(pre.children, "FACTION_INFOS").children if it[7].value != cnt[it[0].value]]
 check(not badc, f"FACTION_INFOS starting-region counts match ({badc[:5]})")
+# armies (deep_dive 11.12): each commanded by a character of its faction whose [4] names it; unit
+# ids unique; a settlement's garrison (SGR[12]) is an army of its owner placed there (ARMY[5]), its
+# agents (SGR[14]) characters of the owner; every AI mobile / unit / garrison names a live object
+armies, unit_ids, bad_gen = {}, [], []
+char_fac = {}
+for it, fid in zip(fa.children, fids):
+    F = sub(it, "FACTION")
+    chars = {sub(c, "CHARACTER").children[2].value: sub(c, "CHARACTER") for c in find_fast(F, "CHARACTER_ARRAY").children}
+    char_fac.update({c: fid for c in chars})
+    for a in sub(F.children, "ARMY_ARRAY").children:
+        A = a[0]; mf = A.children[0]
+        armies[mf.children[0].value] = (fid, A)
+        g = chars.get(mf.children[1].value)
+        if mf.children[1].value and (g is None or g.children[4].value != mf.children[0].value): bad_gen.append(hex(mf.children[0].value))
+        unit_ids += [sub(u[0], "UNIT").children[4].value for u in A.children[1].children if sub(u[0], "UNIT") is not None]
+check(not bad_gen, f"{len(armies)} armies, each general of its faction commanding it ({len(bad_gen)} wrong: {bad_gen[:5]})")
+check(len(unit_ids) == len(set(unit_ids)), f"{len(unit_ids)} unit ids unique")
+bad = []
+for R in regs.values():
+    sgr = sub(R.children[5].children, "SIEGEABLE_GARRISON_RESIDENCE")
+    aid = sgr.children[12].value
+    if aid and (aid not in armies or armies[aid][0] != R.children[19].value or armies[aid][1].children[5].value != sgr.children[1].value):
+        bad.append(R.children[0].value)
+    if any(char_fac.get(c) != R.children[19].value for c in sgr.children[14].value):
+        bad.append(R.children[0].value + " (agents)")
+check(not bad, f"settlement garrisons and agents are their owner's, placed there ({len(bad)} wrong: {bad[:5]})")
+mobs = {it[3].value: it for it in find_fast(root, "CAI_WORLD_RESOURCE_MOBILES").children}
+uset = set(unit_ids)
+bad = [m for m, it in mobs.items() if sub(it, "CAI_RESOURCE_MOBILE").children[10].value not in armies | {0: 0}]
+bad += [it[1].value for it in find_fast(root, "CAI_WORLD_UNITS").children if sub(it, "CAI_UNIT").children[1].value not in uset]
+bad += [g.children[0].value for g in find_all_fast(root, {"CAI_GARRISONABLE"})["CAI_GARRISONABLE"]
+        if (g.children[0].value and g.children[0].value not in mobs) or not set(g.children[2].value) <= set(mobs)]
+check(not bad, f"AI mobiles, units and garrisons name live objects ({len(bad)} wrong: {bad[:5]})")
 print("ALL PASS" if ok else "SOME FAILED")
