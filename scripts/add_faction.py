@@ -50,6 +50,7 @@ from etwpc.io.esf_types import ESFNode, ESFPrimitive, T_UNICODE, T_ASCII  # noqa
 from reactivate_region import (  # noqa: E402
     IdPool, build_loc, build_pack, clear_bdi, deep_copy, set_int, set_list, set_str, ws,
 )
+from unlock_factions import unlock  # noqa: E402
 
 
 @dataclass
@@ -1065,6 +1066,7 @@ def main():
         new = sp.add(s)
         if s.donor:
             sp.make_living(s, new["fid"], new["cai"])
+    unlock(root)        # new factions selectable; selection screen's owners / region counts (deep_dive 11.10)
     data = ESFWriter(root, r.tag_names, r.timestamp).to_bytes()
     (a.out / "startpos.esf").write_bytes(data)
     r2 = ESFReader(a.out / "startpos.esf")
