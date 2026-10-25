@@ -2606,3 +2606,75 @@ match georgia's one for one (no emergent flag left), and they have every faction
 text key georgia has. The death of a new faction was never tested before (M1a never lost its
 region), so this is not an M1b regression. Next: a dump of the hung process (reproduce from the
 autosave) to see what the main thread loops on.
+
+### 11.13 The player's defeat waits for a movie (2026-10-25)
+
+Reproduced from the autosave: Austria's turn never ends, but the UI stays responsive (exit menu
+works), so the game is waiting, not looping. The player-defeat sequence plays a movie:
+
+* Empire.exe has a table of 299 movie-event names at 0x133BA10 (`abolition_slavery` ..
+  `game_lost_natives`); 284 is `game_lost`, 285-298 `game_lost_austria`, `_france`, `_holland`,
+  `_poland`, `_prussia`, `_russia`, `_spain`, `_sweden`, `_britain`, `_united_states`, `_ottoman`,
+  `_maratha`, `_mughal`, `_natives`: the playable factions are hard-coded, everyone else gets
+  `game_lost`.
+* `movie_event_strings` (s s s s: event, culture, movie, id; 61 rows) maps (event, culture) to a
+  .bik. Victories have a row per culture (european, indian, middle_east, tribal_playable), but
+  `game_lost` exists **only for indian**. The defeat message (`campaign_lost`, message_event_strings)
+  exists for european, so the message comes and the movie never does.
+
+Vanilla never needed it (every playable European faction has its own entry). add_faction now adds
+`game_lost` rows for the cultures lacking one: european, middle_east (`Ottoman_Lose_battle.bik`),
+ids 66 / 67. DB tables are read from the packs at start-up, so the same autosave retests it. (The
+same hang would hit any vanilla minor made playable, e.g. Georgia.)
+
+The first retest (european row -> `EUR_Lose_POL.bik`) still hung. Two Task Manager dumps 30 s
+apart (x86 contexts from the WOW64 area): the main thread in its frame loop (win32u, only the
+render frames differ), every worker idle; the screen keeps rendering (154 FPS) with Austria's
+flag over Bucharest, the turn banner on Austria and the bottom panel blank. So: waiting, not
+looping. And **EUR_Lose_POL.bik is in no pack** (movies.pack has aus, fr, hol, pr, rus, sp, swe,
+uk, us; vanilla's own `game_lost` indian row also names a missing file), so the row pointed at
+nothing. Now `EUR_Lose_RUS.bik`, and add_faction asserts the movie exists (pack indexes only).
+
+Retest with `EUR_Lose_RUS.bik`: **same hang, no movie**, so the sequence never reaches the movie and
+the rows are not the fix (kept: harmless, and a European minor's defeat needs them anyway). A
+third dump (new process): main thread again in the campaign frame function (+0x79320, the one
+naming `campaign` / `CAMPAIGN_REPLAY` / `bink_use_thread`) under the app loop, nothing below it.
+The screen shows **1704** while the save is winter 1703, so the round seems to have moved on
+after Bucharest fell. Open question: is Wallachia dead, or alive with no land? Its rake (in Iasi)
+and gentleman (in the field) survive the capture and may keep the faction alive.
+
+### 11.14 The faction never died: its AI presence lists were empty (2026-10-25)
+
+The user confirmed: no message of any kind, and the agents stay on the map. In ETW a faction is
+destroyed with its last region and its characters go with it, so Wallachia was never destroyed.
+
+A deep diff of every nested value (Wallachia vs greece vs georgia) found what Wallachia kept from
+the dormant template: `CAI_FACTION [1]` and `[2]` empty. On every living faction they are the
+**theatres and areas it is present in**: [1] the theatre ids of CAI_SITUATED [3], [2] the area ids
+of CAI_SITUATED [4] (georgia [34] / [13]; Ottomans [34] and 24 areas, its sea areas included:
+fleets count). Vanilla: for all 57 AI factions they contain their settlements' theatres and areas
+(8 also list sea areas). Dormant emergents (greece, hungary) have both empty. The engine never
+rebuilds them: after 7 turns Wallachia's were still empty while its [31] working list had filled.
+They are kept up as things move, so when Bucharest fell there was nothing to take away, the
+faction was never seen to leave the map, and Austria's turn waited.
+
+Fix: make_living sets the new faction's [1] / [2] from its settlements and mobiles (`set_presence`),
+and prunes from the old owner only what nothing of its still occupies (sea areas kept). check_factions
+checks every AI faction's lists cover its settlements. Retest: the 15:55 autosave with the two
+lists set (`out/crash_saves/presence_test_1703.empire_save`, in save_games as "Wallachia presence
+test").
+
+Retest with the patched save: **still hangs** (no message, agents alive). The lists were wrong
+and are kept fixed (they now match vanilla's rule), but they are not what keeps Wallachia alive.
+**Parked (2026-10-25)** at the user's request. What is known: the game waits (frame loop, idle
+workers), Wallachia is not destroyed when its last region falls, no message or movie comes. Not
+yet ruled out: the protectorate (Wallachia is the Ottomans' vassal: does a protectorate with no
+land get destroyed?), the human player as such (would a vanilla minor made playable, e.g. Georgia,
+hang the same way?), and records outside FACTION / CAI_FACTION that a living faction has and the
+clone lacks (the per-pair AI beliefs left to the engine, 11.4). Next tries: the same scenario
+with the protectorate removed from the save; then a vanilla minor as the control.
+
+The same check found an older bug: `unexplorable` (a reactivated region, the Netherlands') has a
+settlement in five theatres `[27, 34, 35, 36, 48]`; no vanilla settlement is in 27, 36 or 48 (small
+theatres of 5-8 regions). Its CAI_SITUATED [3] came whole from a template. Not yet fixed; possibly
+related to the East Indies (Palapo) hang of 10-06.
