@@ -2539,9 +2539,70 @@ byte-identical to the 10-11 build, new banners in new_regions.pack.
 1. Test `out/m1_moldavia`: selector minimap / starting regions for Wallachia, Moldavia and the split
    regions' owners (France, Ottomans), banners (whole flag on each, 2026-10-14), a battle at Iasi.
 2. (done 2026-10-14) faction_art: whole flag on each portrait banner.
-3. M1b: a starting army in Bucharest and Iasi with a general (CHARACTER_OBSTACLE in the pathfinder)
-   and the donor's agents.
+3. (done 2026-10-25, 11.12) M1b: a starting army in Bucharest and Iasi with a general and the
+   donor's agents.
 4. Flag atlas: 4 free slots left in flags3; add a new atlas page before faction 7. Ships:
    naval_id.tai for factions with ports.
-5. Commit the faction art masters (master / coin PNGs live only in the game-dir clone's
-   out/faction_assets, which is ignored).
+5. (done 2026-10-25) The faction art masters are in the repo: `assets/factions/<key>/master.png`
+   and `coin.png` (git LFS); faction_art regenerates out/faction_assets from them byte for byte.
+
+### 11.12 M1b: a starting army and agents (2026-10-25)
+
+Georgia's army is its capital's garrison, and that is the pattern for a minor's start. Every link
+(ids from georgia in Tbilisi):
+
+* **Settlement**: `SIEGEABLE_GARRISON_RESIDENCE` [12] = the ARMY id (10.25), [14] = the agents'
+  CHARACTER ids (rake, gentleman); [10] / [11] its position (fixed point, 2^20 per map unit).
+* **ARMY** (FACTION ARMY_ARRAY): `MILITARY_FORCE` [army id, general id, []], `UNITS_ARRAY`
+  (LAND_UNIT: key, UNIT, 0), [4] army id, [5] the settlement id (0 for an army in the field).
+  `UNIT` [4] its id, [5] / [6] men now / max (bodyguard 32, cavalry 60, Semenys 80, line 160),
+  [7] a class (24 line, 25 light, 28 cavalry, 29 general), [10] the general for the bodyguard
+  only, COMMANDER_DETAILS (colonel names, faction key), [14] a regiment name.
+* **CHARACTER**: [2] and DETAILS [10] its id; a general's [4] army, [5] bodyguard unit id, [11] a
+  list of (x, y) pairs round him (every vanilla general has one: his saved zone outline, it
+  seems); an agent's [7] the settlement. LOCOMOTABLE [0..1] the position (a general also [2..3]).
+  The general's id also keys his CHARACTER_OBSTACLE in the pathfinder.
+* **AI**: one `CAI_RESOURCE_MOBILE` per army and per agent ([3] id; OWNED_DIRECT the AI faction;
+  CAI_SITUATED = the settlement's; CAI_RESOURCE_MOBILE [0] the character's AI id, [1] the AI id of
+  the settlement garrisoned (army) or [2] the settlement it is in (agent), [4] characters, [5] AI
+  units, [10] army id). `CAI_UNIT` [commander's AI id (bodyguard only), unit id, mobile].
+  `CAI_CHARACTER` [mobile, bodyguard AI unit, mobile, character id]. The mobiles are listed by
+  CAI_FACTION [3] (characters in [4]), the region's CAI_REGION [9], the theatre's THEATRE [1], and
+  the settlement's CAI_GARRISONABLE [0] (army) / [2] (agents).
+* **Global beliefs** name the mobile too: a CAI_RESOURCE_MOBILE_MILITARY_STRENGTH / CAI_UNIT_
+  MILITARY_STRENGTH per mobile and unit, and area-of-interest analyses. The mobile's [11] are
+  (owner, slot) pairs of the beliefs that own it (118 for georgia's army), and it owns 4 objects
+  (BLOCK_OWNS). As for cloned settlements, the copies drop all of that (belief caches cleared,
+  BLOCK_OWNS empty): the engine builds its analyses, as it must for every army recruited in play.
+  (Lord's new factions have armies, but its startpos came from a played save, so it is no guide.)
+
+`give_army` clones the donor's garrison into the new capital: army, general (bodyguard unit from
+the donor), the spec's units (each copied from a vanilla unit of that key, so the men and class
+fields are the game's own), agents, and their AI records, with fresh ids and the settlement's
+position. Left out on purpose: the general's [11] (emptied) and his CHARACTER_OBSTACLE (the game
+recomputes a zone when the unit is selected or moves, 10.11). check_factions now checks armies
+(general commands it, unit ids unique, garrisons and agents belong to the settlement's owner, AI
+mobiles / units / garrisons name live objects); vanilla passes them (148 armies, 524 units).
+
+Armies (user's choice, historical, 5 units): Wallachia, general Iordache Crețulescu with boyar
+horse (euro_provincial_cavalry), the seimeni (armed_peasantry_semenys, the Ottoman unit of that
+name) and two militia for the dorobanți; Moldavia, general Bogdan Balș with cossack_cavalry,
+Semenys and two militia. Agents: a rake and a gentleman each (Wallachia Staicu Bucșanu and the
+chronicler Radu Popescu; Moldavia Tudosie Dubău and the chronicler Axinte Uricariul). The EUE unit
+`eue_wallachian_boyars` exists (Ottoman-only in units_to_exclusive_faction_permissions: rows
+(unit, faction, allowed)) but no vanilla army has one to copy, and the user kept recruitment as is.
+
+Build `out/m1b_armies` (batch3c_deploy + Wallachia + Moldavia with armies; replaces m1_moldavia),
+all checks pass. To test: the armies in Bucharest and Iasi (selectable, move out, the zone
+draws), end turn, a battle with them, and the AI using them.
+
+In game (2026-10-25, playing Wallachia): the armies, agents, battles and turns all worked. In
+winter 1703 Austria took Bucharest, Wallachia's only region, and the game **hung on Austria's
+turn** (the player's faction destroyed). The autosave from the start of that turn is kept as
+`out/crash_saves/hang_wallachia_20261025_1555.empire_save`. Checked statically, nothing explains it:
+the save passes the structural checks (owner slots 93,473 links, armies, AI objects; the only
+"failure" is foreign agents in settlements, normal in play), the new factions' FACTION fields
+match georgia's one for one (no emergent flag left), and they have every faction-keyed file and
+text key georgia has. The death of a new faction was never tested before (M1a never lost its
+region), so this is not an M1b regression. Next: a dump of the hung process (reproduce from the
+autosave) to see what the main thread loops on.
