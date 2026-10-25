@@ -76,6 +76,11 @@ class FactionSpec:
     general: tuple = ()            # (first, surname, born); no general -> no army
     army: tuple = ()               # unit keys after the general's bodyguard, each a copy of a vanilla unit
     agents: dict = field(default_factory=dict)       # donor agent type (rake, gentleman) -> (first, surname, born)
+    recruit: tuple = ()            # units another faction holds exclusively that this one may recruit too
+
+
+# Units no vanilla army holds, copied from a vanilla unit of the same size and class
+UNIT_STAND_INS = {"mameluks": "deli_scouts"}
 
 
 # Ministers and court as of 1700 (birth years approximate where unknown). ETW has no heir or
@@ -125,6 +130,117 @@ FACTIONS = {
         general=("Bogdan", "Balș", 1665),
         army=("cossack_cavalry", "armed_peasantry_semenys", "euro_militia_infantry", "euro_militia_infantry"),
         agents={"rake": ("Tudosie", "Dubău", 1660), "gentleman": ("Axinte", "Uricariul", 1670)},
+    ),
+    # Arabia and Egypt (deep_dive 11.15): the Ottoman balance. Template mamelukes (an empty Muslim
+    # emergent: sc_mideast_islamic, Arabic names), donor Morocco (a 13-man court, a General over
+    # its capital garrison, an assassin and an Eastern scholar). Rulers and their kin are
+    # historical; lesser ministers are period names, birth years approximate.
+    "mecca": FactionSpec(
+        "mecca", "Sharifate of Mecca", "Meccan", "Sharifate of Mecca", template="mamelukes",
+        donor="morocco", regions=("hejaz",), protector="ottomans",
+        people={
+            "faction_leader": ("Sa'd", "ibn Zayd", 1630),          # Sharif 1695-1702
+            "head_of_government": ("Sa'id", "ibn Sa'd", 1660),     # his son, Sharif 1702
+            "finance": ("Abd al-Karim", "ibn Muhammad", 1665),     # Sharif 1704-1711
+            "army": ("Abd al-Muhsin", "ibn Ahmad", 1655),          # Sharif 1704
+            "justice": ("Muhammad", "al-Qal'i", 1650),
+            "navy": ("Ahmad", "ibn Ghalib", 1645),                 # Sharif 1684-1688
+            "accident": ("Muhsin", "ibn Husayn", 1650),            # Sharif 1688-1690
+            "governor_europe": ("Barakat", "ibn Muhammad", 1655),
+        },
+        candidates=[("Abdullah", "ibn Sa'id", 1680), ("Mubarak", "ibn Ahmad", 1665), ("Yahya", "ibn Barakat", 1675),
+                    ("Mas'ud", "ibn Sa'id", 1690), ("Hasan", "ibn Ghalib", 1660)],
+        colours=((150, 22, 44), (212, 172, 58), (250, 250, 245)),
+        general=("Sharaf", "ibn Sa'd", 1665),
+        army=("east_desert_nomad_camelry", "east_ethnic_swordsmen_islamic_swordsmen",
+              "east_ethnic_musketmen_fellahin_musketeers", "east_ethnic_musketmen_fellahin_musketeers"),
+        agents={"assassin": ("Rashid", "al-Harbi", 1670), "Eastern_Scholar": ("Ali", "al-Tabari", 1650)},
+    ),
+    "diriyah": FactionSpec(
+        "diriyah", "Emirate of Diriyah", "Najdi", "Emirate of Diriyah", template="mamelukes",
+        donor="morocco", regions=("najd",),
+        people={
+            "faction_leader": ("Saud", "ibn Muhammad", 1660),      # of the Al Muqrin, emir to 1725
+            "head_of_government": ("Musa", "ibn Rabi'a", 1650),
+            "finance": ("Zayd", "ibn Markhan", 1665),              # emir 1726
+            "army": ("Muqrin", "ibn Muhammad", 1665),
+            "justice": ("Abd al-Wahhab", "ibn Sulayman", 1665),    # qadi of al-Uyaynah
+            "navy": ("Uthman", "ibn Hamad", 1660),
+            "accident": ("Watban", "ibn Rabi'a", 1655),
+            "governor_europe": ("Ibrahim", "ibn Musa", 1670),
+        },
+        candidates=[("Muhammad", "ibn Saud", 1687), ("Thunayyan", "ibn Saud", 1685), ("Mishari", "ibn Saud", 1690),
+                    ("Farhan", "ibn Saud", 1692), ("Muqrin", "ibn Markhan", 1680)],
+        colours=((0, 106, 56), (250, 250, 245), (0, 60, 30)),
+        general=("Abdullah", "ibn Muqrin", 1668),
+        army=("east_desert_nomad_camelry", "east_desert_nomad_camelry", "desert_warriors",
+              "east_ethnic_hillmen_musketeers"),
+        agents={"assassin": ("Fahd", "al-Dawsari", 1670), "Eastern_Scholar": ("Abdullah", "ibn Dhahlan", 1660)},
+    ),
+    "banu_khalid": FactionSpec(
+        "banu_khalid", "Banu Khalid", "Khalidi", "Emirate of the Banu Khalid", template="mamelukes",
+        donor="morocco", regions=("al_hasa", "wilderness_arabia"),
+        people={
+            "faction_leader": ("Sa'dun", "ibn Muhammad", 1660),    # Al Ghurayr, emir 1691-1722
+            "head_of_government": ("Ali", "ibn Muhammad", 1665),   # his brother, emir 1722
+            "finance": ("Sulayman", "ibn Muhammad", 1670),         # brother, emir 1736
+            "army": ("Dujayn", "ibn Sa'dun", 1685),
+            "justice": ("Abd al-Rahman", "al-Mulla", 1650),
+            "navy": ("Rashid", "ibn Mughamis", 1660),
+            "accident": ("Barrak", "ibn Ghurayr", 1665),
+            "governor_europe": ("Muhammad", "ibn Uray'ir", 1665),
+        },
+        candidates=[("Munay'", "ibn Sa'dun", 1688), ("Hamad", "ibn Ali", 1690), ("Thamir", "ibn Barrak", 1675),
+                    ("Khalid", "ibn Rashid", 1680), ("Uray'ir", "ibn Dujayn", 1698)],
+        colours=((128, 24, 52), (250, 250, 245), (90, 15, 35)),
+        general=("Barrak", "ibn Muhammad", 1668),
+        army=("east_desert_nomad_camelry", "east_desert_nomad_camelry", "desert_warriors",
+              "east_ethnic_hillmen_musketeers"),
+        agents={"assassin": ("Mutlaq", "al-Ajmi", 1670), "Eastern_Scholar": ("Ahmad", "al-Ahsa'i", 1655)},
+    ),
+    "yarubid": FactionSpec(
+        "yarubid", "Ya'rubid Imamate", "Omani", "Ya'rubid Imamate of Oman", template="mamelukes",
+        donor="morocco", regions=("oman",),
+        people={
+            "faction_leader": ("Saif", "bin Sultan", 1650),        # imam 1692-1711, took Mombasa 1698
+            "head_of_government": ("Sultan", "bin Saif", 1675),    # his son, imam 1711
+            "finance": ("Ya'rub", "bin Bil'arab", 1665),
+            "army": ("Muhanna", "bin Sultan", 1670),               # imam 1719
+            "justice": ("Khalaf", "bin Mubarak", 1670),            # the Hinawi leader
+            "navy": ("Muhammad", "bin Nasir", 1680),               # the Ghafiri leader
+            "accident": ("Sa'id", "bin Khalfan", 1660),
+            "governor_europe": ("Bil'arab", "bin Nasir", 1665),
+        },
+        candidates=[("Saif", "bin Muhanna", 1690), ("Nasir", "bin Murshid", 1680), ("Murshid", "bin Sultan", 1685),
+                    ("Abdullah", "bin Khalfan", 1675), ("Majid", "bin Sa'id", 1685)],
+        colours=((196, 18, 40), (250, 250, 245), (0, 122, 61)),
+        general=("Malik", "bin Ya'rub", 1665),
+        army=("east_ethnic_musketmen_fellahin_musketeers", "east_ethnic_musketmen_fellahin_musketeers",
+              "east_ethnic_swordsmen_islamic_swordsmen", "east_ethnic_swordsmen_islamic_swordsmen"),
+        agents={"assassin": ("Juma", "al-Balushi", 1670), "Eastern_Scholar": ("Khamis", "al-Shaqsi", 1650)},
+    ),
+    "mamluk_egypt": FactionSpec(
+        "mamluk_egypt", "Mamluk Egypt", "Egyptian", "The Mamluk Beys of Egypt", template="mamelukes",
+        donor="morocco", regions=("egypt",), protector="ottomans",
+        people={
+            "faction_leader": ("Ibrahim", "Bey Abu Shanab", 1650),  # the Qasimi chief, d. 1718
+            "head_of_government": ("Isma'il", "Bey ibn Iwaz", 1680),  # shaykh al-balad 1714
+            "finance": ("Qaytas", "Bey al-Faqari", 1650),             # the Faqari chief
+            "army": ("Ayyub", "Bey al-Faqari", 1660),
+            "justice": ("Mustafa", "al-Qazdaghli", 1650),             # founder of the Qazdaghli house
+            "navy": ("Ahmad", "Ifranj", 1660),                        # the Janissary officer, d. 1711
+            "accident": ("Hasan", "Agha Bilifya", 1660),
+            "governor_europe": ("Muhammad", "Bey Qitamish", 1670),
+        },
+        candidates=[("Iwaz", "Bey", 1655), ("Ridwan", "Bey al-Julfi", 1675), ("Dhu'l-Fiqar", "Bey", 1680),
+                    ("Uthman", "Bey Dhu'l-Fiqar", 1690), ("Muhammad", "Bey Cerkes", 1675)],
+        colours=((232, 184, 40), (250, 250, 245), (120, 80, 20)),
+        general=("Murad", "Bey", 1665),
+        army=("mameluks", "mameluks", "east_ethnic_swordsmen_fellahin", "east_ethnic_musketmen_fellahin_musketeers"),
+        # vanilla gives mameluks to the mamelukes and Ottomans only (units_to_exclusive_faction_permissions);
+        # without a row the Mamluks' own starting cavalry was a unit they could not have
+        recruit=("mameluks",),
+        agents={"assassin": ("Salih", "Kashif", 1670), "Eastern_Scholar": ("Ahmad", "al-Damanhuri", 1690)},
     ),
 }
 
@@ -682,10 +798,18 @@ class Startpos:
         n_sgr = garrison(regs[spec.regions[0]])
         assert n_sgr.children[12].value == 0 and not n_sgr.children[14].value, f"{spec.regions[0]} already has a garrison"
         sett, x, y = n_sgr.children[1].value, n_sgr.children[10].value, n_sgr.children[11].value
-        d_army_id, d_agent_ids = d_sgr.children[12].value, list(d_sgr.children[14].value)
+        d_army_id = d_sgr.children[12].value
         d_army = next(a for a in sub(D.children, "ARMY_ARRAY").children if a[0].children[0].children[0].value == d_army_id)
         d_gen_id = d_army[0].children[0].children[1].value
         d_chars = {sub(c, "CHARACTER").children[2].value: c for c in sub(D.children, "CHARACTER_ARRAY").children}
+        # one donor agent of each spec'd type, the capital's own first (Morocco's assassin is in
+        # the field: it is placed in the new capital like the rest)
+        in_cap = list(d_sgr.children[14].value)
+        d_agent_ids = []
+        for kind in spec.agents:
+            of_kind = [i for i, c in d_chars.items() if sub(c, "CHARACTER").children[3].value == kind]
+            assert of_kind, f"{spec.donor} has no {kind}"
+            d_agent_ids.append(min(of_kind, key=lambda i: i not in in_cap))
 
         # one vanilla unit of each key to copy (the donor's first); the bodyguard is the donor general's
         units = {}
@@ -696,6 +820,14 @@ class Startpos:
                     units.setdefault(U.children[0].children[0].value, u)
         bodyguard = next(u for u in d_army[0].children[1].children
                          if sub(u[0], "UNIT") is not None and sub(u[0], "UNIT").children[10].value == d_gen_id)
+        # a unit no vanilla army holds is copied from a stand-in of the same size and class, its
+        # keys renamed (mameluks: 60 men, an eastern_officer cavalry unit, like deli_scouts)
+        for k in spec.army:
+            if k not in units and k in UNIT_STAND_INS and UNIT_STAND_INS[k] in units:
+                u = deep_copy(units[UNIT_STAND_INS[k]])
+                set_str(u[0].children[0].children[0], k)
+                set_str(sub(u[0], "UNIT").children[0].children[0], k)
+                units[k] = u
         missing = [k for k in spec.army if k not in units]
         assert not missing, f"{spec.key}: no vanilla unit to copy for {missing}"
 
@@ -748,6 +880,8 @@ class Startpos:
                 set_list(ch.children[11], [])
             else:
                 set_int(ch.children[7], sett)
+                set_int(loc.children[2], 0)        # as an agent inside a settlement (a field one's
+                set_int(loc.children[3], 0)        # are its own position)
             chars.children.append(c)
             new_chars[d_id] = (new_id, ch)
         agent_ids = [new_chars[a][0] for a in d_agent_ids if a in new_chars]
@@ -987,6 +1121,7 @@ FACTION_TABLES = {
     "ministerial_positions_by_gov_types": "sssss",  # faction, post, government, ?, title
     "unit_stats_naval_crew_to_factions": "ssssssss",  # faction, 7 crew units
     "names_royalty": "ssisii",                    # faction, name, 1, gender, 1, id
+    "units_to_exclusive_faction_permissions": "ssb",  # unit, faction, allowed (FactionSpec.recruit)
 }
 
 
@@ -1026,6 +1161,8 @@ def db_rows(b: bytes, schema: str) -> tuple[bytes, list[list]]:
                 v = None
                 if f:
                     v, p = rstr(b, p)
+            elif t == "b":
+                v, p = b[p], p + 1
             else:
                 v, p = struct.unpack_from("<I", b, p)[0], p + 4
             r.append(v)
@@ -1042,6 +1179,8 @@ def db_bytes(head: bytes, rows: list[list], schema: str) -> bytes:
                 out.append(ws(v))
             elif t == "o":
                 out.append(b"\x00" if v is None else b"\x01" + ws(v))
+            elif t == "b":
+                out.append(bytes([v]))
             else:
                 out.append(struct.pack("<I", v))
     return b"".join(out)
@@ -1157,20 +1296,53 @@ def campaign_flag_atlas(game_data: Path, flags: list[tuple[str, bytes]]) -> list
     H, W = struct.unpack_from("<II", atlas, 12)
     mips = struct.unpack_from("<I", atlas, 28)[0]
     assert atlas[84:88] == b"DXT1", "flags3.dds is not DXT1"
-    taken = []
-    for line in tai.splitlines():
-        if line.startswith("#") or not line.strip():
-            continue
-        name, rest = line.split(None, 1)
-        f, _, _, u, v, _, w, h = [x.strip() for x in rest.split(",")]
-        if f == "flags3.dds":
-            taken.append((round(float(u) * W), round(float(v) * H)))
-    free = [(x, y) for y in range(0, H, 256) for x in range(0, W, 512) if (x, y) not in taken]
+
+    def slots3(tai_text, h_px):
+        taken = []
+        for line in tai_text.splitlines():
+            if line.startswith("#") or not line.strip():
+                continue
+            name, rest = line.split(None, 1)
+            f, _, _, u, v, _, w, h = [x.strip() for x in rest.split(",")]
+            if f == "flags3.dds":
+                taken.append((round(float(u) * W), round(float(v) * h_px)))
+        return [(x, y) for y in range(0, h_px, 256) for x in range(0, W, 512) if (x, y) not in taken]
+
+    def level_rows(h_px, m):
+        return max(1, (max(1, h_px >> m) + 3) // 4)
+
+    row_bytes = lambda m: max(1, (max(1, W >> m) + 3) // 4) * 8
+    free = slots3(tai, H)
+    if len(flags) > len(free) and H < W:
+        # flags3 is 2048 x 1024 (16 slots, 10 vanilla), the other pages 2048 x 2048: grow it to
+        # their size (every 4 x 4 DXT1 block row of each mip level kept, blank rows appended), and
+        # halve its entries' v / height in the .tai, which are fractions of the page
+        H2 = W
+        out, o = bytearray(atlas[:128]), 128
+        for m in range(mips):
+            n_old = level_rows(H, m) * row_bytes(m)
+            out += atlas[o:o + n_old] + bytes((level_rows(H2, m) - level_rows(H, m)) * row_bytes(m))
+            o += n_old
+        struct.pack_into("<I", out, 12, H2)
+        struct.pack_into("<I", out, 20, level_rows(H2, 0) * row_bytes(0))
+        lines = []
+        for line in tai.splitlines():
+            if not line.startswith("#") and line.strip() and line.split(None, 1)[1].strip().startswith("flags3.dds"):
+                name, rest = line.split(None, 1)
+                p = [x.strip() for x in rest.split(",")]
+                p[4] = f"{float(p[4]) * H / H2:.6f}"
+                p[7] = f"{float(p[7]) * H / H2:.6f}"
+                line = f"{name}\t\t{', '.join(p)}"
+            lines.append(line)
+        tai = "\n".join(lines) + "\n"
+        atlas, H = out, H2
+        free = slots3(tai, H)
+        print(f"flag atlas: flags3.dds grown to {W} x {H} ({len(free)} free slots)")
     assert len(flags) <= len(free), f"only {len(free)} free campaign-flag slots"
     offs, o = [], 128
     for m in range(mips):
         offs.append(o)
-        o += max(1, (max(1, W >> m) + 3) // 4) * max(1, (max(1, H >> m) + 3) // 4) * 8
+        o += level_rows(H, m) * row_bytes(m)
     for (tex, img), (x, y) in zip(flags, free):
         src = Image.open(io.BytesIO(img)).convert("RGB").resize((512, 256), Image.LANCZOS)
         for m in range(mips):
@@ -1199,8 +1371,12 @@ def agent_model(game_data: Path, tex: str, key: str) -> bytes:
     except KeyError:                 # emergents may have none: borrow georgia's coin
         tex = "georgia"
         b = pack_file(game_data / "models.pack", path.format(tex))
-    old = f"agent_ID_{tex}_diffuse"
-    i = b.find(old.encode("utf-16-le"))
+    # the texture name the model carries (not always its own key: mamelukes' says "mameluks")
+    import re
+    m = re.search(rb"a\x00g\x00e\x00n\x00t\x00_\x00I\x00D\x00_\x00(?:[\x20-\x7e]\x00)+?_\x00d\x00i\x00f\x00f\x00u\x00s\x00e\x00", b)
+    assert m, f"no texture name in agent_id_{tex}.rigid_model"
+    old = m.group(0).decode("utf-16-le")
+    i = m.start()
     assert i >= 2 and struct.unpack_from("<H", b, i - 2)[0] == len(old), f"no texture name in agent_id_{tex}.rigid_model"
     return b[:i - 2] + ws(f"agent_ID_{key}_diffuse") + b[i + 2 * len(old):]
 
@@ -1280,6 +1456,7 @@ def build_db(specs: list[FactionSpec], game_data: Path, assets: Path, region_fil
                     for k, v in loc_all.items():
                         if k.startswith("building_faction_variants_") and k.endswith(f"{r[0]}{t}"):
                             text[k[:-len(t)] + s.key] = v
+        more["units_to_exclusive_faction_permissions"] += [[u, s.key, 1] for u in s.recruit]
         names = [p[0] for p in [s.people.get("faction_leader")] + list(s.candidates) if p]
         for nm in dict.fromkeys(names):
             more["names_royalty"].append([s.key, ascii_key(nm), 1, "m", 1, rng.randrange(1 << 32)])

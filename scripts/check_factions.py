@@ -217,4 +217,16 @@ bad = [(key_of_fid.get(sub(it, "CAI_FACTION").children[6].value, it[2].value),
        for it in cwf.children if sub(it, "CAI_FACTION") is not None]
 bad = [b for b in bad if b[1] or b[2]]
 check(not bad, f"AI factions list the theatres / areas of their settlements ({len(bad)} wrong: {bad[:5]})")
+# border patrol entries name (region, area): the area must exist, i.e. index < the region's
+# HLCI count, one HLCI per area (an entry left on a moved area crashed end turn, deep_dive 10.27)
+# Vanilla's own exceptions (it plays): huron_territory, great_lakes, bahamas.
+VANILLA_ODD_PATROL = {"huron_territory", "great_lakes", "bahamas"}
+n_areas = {it[2].value: (sub(it, "CAI_REGION").children[10].value, len(sub(it, "CAI_REGION").children[1].value))
+           for it in find_fast(root, "CAI_WORLD_REGIONS").children}
+bad = []
+for b in find_all_fast(root, {"CAI_BORDER_PATROL_ANALYSIS_AREA_SPECIFIC"})["CAI_BORDER_PATROL_ANALYSIS_AREA_SPECIFIC"]:
+    r_ai, a = b.children[0].value, b.children[1].value
+    if r_ai in n_areas and a >= n_areas[r_ai][1] and n_areas[r_ai][0] not in VANILLA_ODD_PATROL:
+        bad.append((n_areas[r_ai][0], a))
+check(not bad, f"border patrol entries name areas their regions have ({len(bad)} wrong: {bad[:5]})")
 print("ALL PASS" if ok else "SOME FAILED")
