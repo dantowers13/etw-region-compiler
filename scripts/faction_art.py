@@ -15,9 +15,11 @@ so its flag pixels are easy to tell from the gold finials). With --cloth (defaul
 take the brightness variation of the atlas's own cloth flag (flag_default), so they sit with the
 vanilla flags instead of looking flat.
 
-    python scripts/faction_art.py --key moldavia --master master.png [--emblem coin.png]
-    python scripts/faction_art.py --key wallachia --master out/faction_assets/wallachia/ui_flags/large.tga \\
-        --emblem out/faction_assets/wallachia/wallachia_option2_1024.png --only-cloth
+The masters live in the repo (git LFS) as assets/factions/<key>/master.png and coin.png; the
+art they make is byte-identical on every run, so out/faction_assets/<key> is a build output.
+
+    python scripts/faction_art.py --key moldavia --master $REPO/assets/factions/moldavia/master.png \\
+        --emblem $REPO/assets/factions/moldavia/coin.png
 """
 
 from __future__ import annotations
@@ -70,13 +72,30 @@ def flag_pixels(ref: Image.Image) -> np.ndarray:
     return (al > 0) & ~gold & ~dark                                   # all else is cloth (incl. pink edges)
 
 
+def banner_boxes(mask: np.ndarray) -> list[tuple[int, int, int, int]]:
+    """(x0, y0, x1, y1) of each banner's cloth: runs of columns holding cloth, split at empty
+    columns (portrait_flags has two banners beside the portrait oval; a pennant has one).
+    Stray runs under 4 columns are dropped."""
+    cols = np.where(mask.any(axis=0))[0]
+    boxes = []
+    for run in np.split(cols, np.where(np.diff(cols) > 1)[0] + 1):
+        if len(run) < 4:
+            continue
+        rows = np.where(mask[:, run[0]:run[-1] + 1].any(axis=1))[0]
+        boxes.append((int(run[0]), int(rows[0]), int(run[-1]) + 1, int(rows[-1]) + 1))
+    return boxes
+
+
 def pennant(master: Image.Image, ref: Image.Image) -> Image.Image:
     """The master laid upright over a vanilla pennant's cloth pixels (as vanilla's banners show
-    their flag: Saxony green over white), keeping the reference's alpha, finials and fold shading."""
+    their flag: Saxony green over white), keeping the reference's alpha, finials and fold shading.
+    Each banner gets the whole flag, fitted to its own cloth."""
     w, h = ref.size
-    m = np.asarray(master.convert("RGB").resize((w, h), Image.LANCZOS), dtype=np.float32)
     a = np.asarray(ref, dtype=np.float32)
     mask = flag_pixels(ref)
+    m = np.zeros((h, w, 3), dtype=np.float32)
+    for x0, y0, x1, y1 in banner_boxes(mask):
+        m[y0:y1, x0:x1] = np.asarray(master.convert("RGB").resize((x1 - x0, y1 - y0), Image.LANCZOS))
     # the folds, without the reference's own pattern (georgia's crosses): its brightness with
     # the red parts lifted to the white's level, then blurred
     lum = a[..., :3].max(axis=2)
