@@ -2528,11 +2528,17 @@ faction_art stretches one flag across the whole image, so the left banner shows 
 arms) and the right the fly (stripes); vanilla gives each banner the whole flag. Next: split the
 reference's alpha into its two banners and lay the full flag on each.
 
+2026-10-14: faction_art fits the whole flag into each banner's own cloth (column runs of the
+reference's cloth mask, each with its row extent; pennants are one run). add_faction now ends with
+unlock_factions' `unlock` (the 10-11 build had it run by hand afterwards: without it the new
+factions are not selectable and the preopen snapshot is stale). Rebuilt `out/m1_moldavia`: startpos
+byte-identical to the 10-11 build, new banners in new_regions.pack.
+
 ### 11.11 Next session
 
 1. Test `out/m1_moldavia`: selector minimap / starting regions for Wallachia, Moldavia and the split
-   regions' owners (France, Ottomans), banners.
-2. faction_art: whole flag on each portrait banner (above).
+   regions' owners (France, Ottomans), banners (whole flag on each, 2026-10-14), a battle at Iasi.
+2. (done 2026-10-14) faction_art: whole flag on each portrait banner.
 3. M1b: a starting army in Bucharest and Iasi with a general (CHARACTER_OBSTACLE in the pathfinder)
    and the donor's agents.
 4. Flag atlas: 4 free slots left in flags3; add a new atlas page before faction 7. Ships:
