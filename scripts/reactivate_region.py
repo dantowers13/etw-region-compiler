@@ -1428,6 +1428,8 @@ def cai_own_region(root, fid: int, cai_region: int, gov_id: int) -> None:
 TRANSFERS = [
     ("labrador", "france", "new_france", "wilderness_canada", "wilderness_canada"),
     ("new_mexico", "spain", "florida", None, "wilderness_mexico"),
+    # Safavid Persia held Basra 1697-1701 (Ottoman balance, deep_dive 10.28)
+    ("basra", "safavids", "persia", None, "basra"),
 ]
 
 
@@ -1448,6 +1450,21 @@ def transfer_region(root, name: str, new_owner: str, gov_like: str, capital_to: 
             set_int(f[0], new_fid)
     set_int(R.children[19], new_fid)
     set_int(R.children[21], new_gov)
+    # buildings name their owner faction
+    keys = {}
+    for it in find(root, "FACTION_ARRAY").children:
+        f = it[0]
+        k = next(i for i, c in enumerate(f.children) if isinstance(c, ESFPrimitive) and isinstance(c.value, str))
+        keys[f.children[k - 1].value] = f.children[k].value
+    st = [R]
+    while st:
+        x = st.pop()
+        for c in (x.children if isinstance(x, ESFNode) else x):
+            if isinstance(c, ESFPrimitive):
+                if c.type_tag in (T_UNICODE, T_ASCII) and c.value == keys[old_fid]:
+                    set_str(c, new_owner)
+            elif isinstance(c, (ESFNode, list)):
+                st.append(c)
     # governorship posts
     for g in find_all(root, "GOVERNORSHIP"):
         if g.children[1].value == old_gov:
@@ -1487,6 +1504,12 @@ def transfer_region(root, name: str, new_owner: str, gov_like: str, capital_to: 
             set_int(it[0].children[0], new_cai_fac)          # OWNED_DIRECT
             if cs.children[1].value == old_cai_fac:          # faction-capital marker
                 set_int(cs.children[1], 0)
+            # the new owner's AI presence: CAI_FACTION [1] theatres, [2] areas (deep_dive 11.14)
+            sit = find(it, "CAI_SITUATED")
+            ncf = find(new_cf, "CAI_FACTION")
+            for t_ in sit.children[3].value:
+                _list_add(ncf.children[1], t_)
+            _list_add(ncf.children[2], sit.children[4].value)
     print(f"transfer: {name} -> {new_owner} (governorship {old_gov} -> {new_gov}, {n_own} garrison residences"
           f"{', old owner capital -> ' + capital_to if capital_to else ''})")
 
@@ -2227,6 +2250,8 @@ LOOKUP_NEUTRAL = ((158, 173, 156), (159, 174, 157))
 # Areas add_region.py gave to an existing region: paint its neutral pixels in that
 # region's colour (Madeira -> portugal).
 LOOKUP_GIFTS = {"portugal": (96, 126, 89)}
+# Void regions whose remaining land is painted the void colour (Arabia's was Jawf's colour)
+LOOKUP_VOID_REPAINT = ("arabia",)
 
 
 def repaint_lookup(regions_root, specs, tga: Path, theatre_flag: int = 2) -> bytes | None:
@@ -2246,6 +2271,7 @@ def repaint_lookup(regions_root, specs, tga: Path, theatre_flag: int = 2) -> byt
     void = pal.index(LOOKUP_VOID)
     pix_used = set(d[off:off + w * h])
     changed = 0
+    touched = set()                         # offsets of every pixel painted below
     for spec in specs:
         if spec.theatre_flag != theatre_flag:
             continue
@@ -2274,6 +2300,7 @@ def repaint_lookup(regions_root, specs, tga: Path, theatre_flag: int = 2) -> byt
                 # a reactivated one only the void-coloured ones
                 if (spec.positions is not None or d[o] == void) and inside(x0 + (x + 0.5) * sx, wy):
                     d[o] = idx
+                    touched.add(o)
                     n += 1
         if n:
             print(f"lookup: {spec.name} painted {n} void pixels")
@@ -2292,11 +2319,127 @@ def repaint_lookup(regions_root, specs, tga: Path, theatre_flag: int = 2) -> byt
                 o = off + row * w + x
                 if d[o] in neutral and inside(x0 + (x + 0.5) * sx, wy):
                     d[o] = idx
+                    touched.add(o)
                     n += 1
         if n:
             print(f"lookup: {name} painted {n} neutral pixels (areas from add_region.py)")
         changed += n
+
+    # void land carved by the builds (what is left of `arabia`, the Rub' al Khali) takes the
+    # void colour (only these: the other void-flagged records, lakes, rivers, impassable, keep
+    # vanilla's own colours): vanilla painted all of Arabia in the colour Jawf reuses, so the remainder showed
+    # on the minimap as Jawf's, and so its owner's (2026-10-25)
+    names_ = [region_name(r) for r in regions_root.children[3].children[3].children]
+    for vname in LOOKUP_VOID_REPAINT:
+        if vname not in names_:
+            continue
+        inside = region_ring_inside(regions_root, vname)
+        n = 0
+        for y in range(h):
+            row = (h - 1 - y) if not desc & 0x20 else y
+            wy = y1 - (y + 0.5) * sy
+            for x in range(w):
+                o = off + row * w + x
+                if d[o] != void and pal[d[o]] != (0, 0, 0) and inside(x0 + (x + 0.5) * sx, wy):
+                    d[o] = void
+                    touched.add(o)
+                    n += 1
+        if n:
+            print(f"lookup: {vname} (void) repainted {n} pixels void")
+            changed += n
+
+    # borders: the minimap's region outlines are black pixels in this image, which every vanilla
+    # region has (neighbours and coasts) and painted pixels lost. Each painted pixel next to a
+    # pixel of another colour (not the border black) becomes black; between two painted pixels
+    # only one draws (the line stays one pixel wide), and void land is never outlined itself.
+    if touched:
+        counts = {}
+        for v in d[off:off + w * h]:
+            counts[v] = counts.get(v, 0) + 1
+        black = max((i for i, c in enumerate(pal) if c == (0, 0, 0)), key=lambda i: counts.get(i, 0))
+        orig = bytes(d[off:off + w * h])
+        n = 0
+        for o in sorted(touched):
+            p = o - off
+            v = orig[p]
+            if v in (black, void):
+                continue
+            x, row = p % w, p // w
+            for dx, dy in ((1, 0), (0, 1), (-1, 0), (0, -1)):
+                xx, rr = x + dx, row + dy
+                if not (0 <= xx < w and 0 <= rr < h):
+                    continue
+                q = rr * w + xx
+                u = orig[q]
+                if u == v or u == black:
+                    continue
+                if (off + q) in touched and u != void and (dx, dy) in ((-1, 0), (0, -1)):
+                    continue                    # the neighbour draws this one
+                d[o] = black
+                n += 1
+                break
+        print(f"lookup: {n} border pixels drawn round {len(touched)} painted pixels (palette entry {black})")
+        changed += n
     return bytes(d) if changed else None
+
+
+def paint_parchment(regions_root, vanilla_lookup: Path, lookup: bytes, parchment: Path, theatre_flag: int = 2) -> bytes:
+    """The campaign selection screen's theatre map, `<theatre>_map.tga` (490 x 300 parchment, the
+    lookup's grid), has region borders drawn as thin brown lines; new regions had none
+    (2026-10-25). Every border pixel repaint_lookup drew (black in `lookup`, not in vanilla's)
+    that separates two land regions (or land and void) is drawn in vanilla's line colour, the
+    median of the parchment under vanilla's own land-land border pixels. Coast outlines are
+    left out: the parchment shows coasts by its pale sea."""
+    import io
+    import numpy as np
+    import shapely
+    from PIL import Image
+    from shapely.ops import unary_union
+    from etwpc.compiler.mesh import Mesh
+    van = np.asarray(Image.open(vanilla_lookup))
+    new = np.asarray(Image.open(io.BytesIO(lookup)))
+    pal = Image.open(io.BytesIO(lookup)).getpalette()[:768]
+    pal = [tuple(pal[i:i + 3]) for i in range(0, 768, 3)]
+    h, w = new.shape
+    black = max((i for i, c in enumerate(pal) if c == (0, 0, 0)), key=lambda i: int((van == i).sum()))
+    void = pal.index(LOOKUP_VOID)
+    # land: pixel centres inside a land region's areas (not the rivers or lakes records)
+    m = Mesh(regions_root)
+    land = unary_union([m.area_polygon(ri, k) for ri in range(len(m.regs)) if m.regs[ri][1].value == "land"
+                        and m.name(ri) not in ("all", "lakes") for k in range(len(m.areas(ri)))
+                        if not m.area_polygon(ri, k).is_empty])
+    th = regions_root.children[0].children[theatre_flag][0]
+    (x0, y0), (x1, y1) = th.children[1].value, th.children[2].value
+    xs = x0 + (np.arange(w) + 0.5) * (x1 - x0) / w
+    ys = y1 - (np.arange(h) + 0.5) * (y1 - y0) / h
+    gx, gy = np.meshgrid(xs, ys)
+    on_land = shapely.contains_xy(land, gx, gy)
+    is_land = np.zeros(256, bool)
+    for i in np.unique(new):
+        sel = new == i
+        is_land[i] = i == void or on_land[sel].mean() > 0.5
+    is_land[black] = False
+
+    def separates(idx, y, x):
+        nb = {int(idx[yy, xx]) for yy in range(max(0, y - 1), min(h, y + 2)) for xx in range(max(0, x - 1), min(w, x + 2))}
+        return len({i for i in nb if is_land[i]}) >= 2
+
+    img = Image.open(parchment).convert("RGB")
+    px = np.asarray(img).copy()
+    samples = [px[y, x] for y, x in zip(*np.nonzero(van == black)) if separates(van, y, x)]
+    line = np.median(np.array(samples), axis=0).astype(np.uint8)
+    drawn = 0
+    for y, x in zip(*np.nonzero((new == black) & (van != black))):
+        if separates(new, y, x):
+            px[y, x] = line
+            drawn += 1
+    print(f"parchment: {drawn} border pixels drawn in vanilla's line colour {tuple(int(v) for v in line)} "
+          f"({len(samples)} vanilla line pixels sampled)")
+    b = io.BytesIO()
+    Image.fromarray(px).save(b, "TGA", compression=None, orientation=-1)
+    out = b.getvalue()
+    assert out[2] == 2 and not out[17] & 0x20, "unexpected TGA header"
+    return out
 
 
 def border_splines(regions_root, specs, packs: list[Path]) -> list[tuple[str, bytes]]:
@@ -2608,6 +2751,10 @@ def main():
     lookup = repaint_lookup(regions_root, specs, a.europe_lookup) if a.europe_lookup.exists() else None
     if lookup is not None:
         extra.append(("campaign_maps\\global_map\\europe_lookup.tga", lookup))
+        parchment = a.europe_lookup.with_name("europe_map.tga")
+        if parchment.exists():
+            extra.append(("campaign_maps\\global_map\\europe_map.tga",
+                          paint_parchment(regions_root, a.europe_lookup, lookup, parchment)))
     extra += border_splines(regions_root, specs, a.border_packs)
     extra += campaign_trees(regions_root, specs, a.tree_packs)
     p_pack = db_pack(specs, out, loc, extra=extra)
