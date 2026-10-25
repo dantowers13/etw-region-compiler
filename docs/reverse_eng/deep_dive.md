@@ -2288,6 +2288,71 @@ Fix: both fields are 0 on every cloned settlement, and CAI_GARRISONABLE is 0 on 
 Armenia's fall in game, and later turns too. Existing campaigns started on older builds still
 carry the links; the same clearing can be applied to their saves.
 
+### 10.26 Arabia: Najd, al-Hasa and Oman, and Hejaz rebuilt (2026-10-25)
+
+Hejaz (10.23) had no land link to anything: `open_void_pathfinding` opens only cells wholly in
+the child, so every cell its edge crosses stays impassable, and a land border is a strip of
+passable records with the pair's border id (10.4) that only `split_pathfinding` makes. Cutting
+Najd the same way would have left a landlocked region unreachable by land or sea.
+
+So one block of the void is opened, then the regions are split off it like any passable
+region (`BATCH3` = najd, hejaz, oman, al_hasa):
+
+* `najd` (void_parent): the whole block north of the Europe grid's edge (y 140), east of the Red
+  Sea, south of Jawf, less the Rub' al Khali; path id 107; 1,273 interior + 101 coastal cells
+  opened, 86 left impassable on its edge with the void and 58 where Jawf's land shares a cell. It
+  takes the Abu Dhabi and Masirah islands (sub-areas, nearer piece).
+* `hejaz`, `oman` (`sub_areas="cover"`: the two islands), `al_hasa`: ordinary splits of the block.
+  Border ids 336 najd/hejaz, 338 najd/oman (handed to al-Hasa when it is cut, it lies on its side),
+  340 najd/al_hasa. Oman goes before al-Hasa: al-Hasa runs from the coast to the void, and cut
+  first it stranded Oman's land, which went to it as the parent may keep one ring.
+* A drawn polygon must not run along the parent's own ring (a shared corner, (352, 161), ended
+  up in neither piece): al-Hasa's and Oman's reach past the block's southern edge.
+* The 1.5-unit void gap round Jawf could not survive as `arabia`: spanning the peninsula, the
+  block cut the strip off from the rest of the void, so it went to the block. In regions.esf all
+  four now touch Jawf; in pathfinding the 58 shared cells stay impassable. The Jawf link is
+  therefore pathfinding work only (a border strip through those cells), the next step.
+
+Lines (c.1700, out/split_planning_arabia, to be tidied in a border audit): positions from a
+thin-plate-spline lon/lat fit (`proj.py`) on 16 vanilla cities and 5 coast landmarks read off
+the arabia polygon (Qatar tip, Gulf of Salwa, Abu Dhabi island, Musandam, Ras al-Hadd), all
+within 0.35 units. Najd: Diriyah; Unaizah, Sudair, al-Kharj farms. Al-Hasa: Hofuf; Qatif,
+al-Bidda (Doha). Oman: Rustaq; Muscat, Sohar, Nizwa, Julfar. Coastal towns nudged 1.2 inland (the
+map's coast is smoothed). All Ottoman for now (new factions to come). The Musandam tip is a stray
+5.3-unit area of Jawf; moving an area between two existing regions is a new operation, left for
+the border audit.
+
+**Coastal towns (first test):** Al-Bidda showed south of Qatar, not on it. `footprints=True`
+transplants a template block that needs a clean square of interior cells; none exists on a
+narrow coast, so the search moved slots inland (Al-Bidda 9 units, Julfar 12, Jeddah 5.5).
+`RegionSpec.coastal_slots` now carves those slots' own outlines instead (`carve_outline_slot`,
+the "coastal" rule of 9.11, lifted out of `place_coastal_footprints`), with `allow_run`: the band
+of coastal header cells in the opened block is one cell deep, too narrow for an outline 0.15 off
+the sea, so it may cut the region's own interior cells as split footprints do. They are carved
+before the capital's transplant: a block transplanted nearby (Mecca, 5 units) left Jeddah no site.
+All eleven coastal slots now sit exactly on their marks; inland slots still snap 3-4.5 units.
+
+**Added (user, after the test):** towns Yanbu, Ta'if (Hejaz), Ha'il, al-Aflaj (Najd), Uqair
+(al-Hasa), Sur, Abu Dhabi (Oman); mines with precedent: Mahd adh-Dhahab gold (Hejaz), al-Hamdani's
+Shamam silver of al-Yamama (Najd), Wadi Jizzi copper behind Sohar (Oman, as `iron` like Cyprus's
+Troodos), and the Qatar pearl banks (a `gems` slot: no pearl resource exists).
+
+**Resource slots were all iron mines (second test).** S3 copies every new resource slot from
+the template's first resource slot (armenia: Oltu's `iron_mine`), so Khaybar's farms, Sakaka's
+flocks and the gold / silver / gem mines all started as iron mines; so did the eight's and
+Khiva's (Nisa cotton, Astrabad rice). A slot's building is now set by its DB type from vanilla's
+level-1 buildings (`RESOURCE_BUILDINGS`: wheat / sheep / corn peasant farms, rice paddies,
+iron_mine, timber camp, fur merchant, vineyards, the small plantations), and gold, silver and gems
+start empty (an undeveloped town's BUILDING_MANAGER), as about half of vanilla's do;
+`START_EMPTY` names single slots (Oman's copper). Balance: each Arabian region starts with one
+working farm or herd and one mine to build; Najd, the largest, has two. Added for that: Al-Hasa
+Oasis Farms, Batinah Date Gardens (carved at the coast), Najdi Camel Herds (a sheep slot).
+
+Build: `split_region.py --split batch3` on `batch2b_split` -> `batch3d_split` -> S3
+`--footprints --obstacles none` (all specs) -> `batch3d_s3` -> `unlock_factions` ->
+`batch3d_s3_unlocked` -> painter -> `map_poc20`. (Console: run with PYTHONIOENCODING=utf-8, the
+logs print Aydın and Hüdavendigâr.)
+
 ## 11. New factions (plan, 2026-10-10)
 
 Goal (user): 20-30 brand-new factions on top of all 56 existing ones, keeping every emergent
