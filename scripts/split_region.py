@@ -129,11 +129,14 @@ SPLITS = {
     # Abu Dhabi and Masirah, islands the block took from `arabia`, go with Oman
     "oman": dict(parent="najd", child="oman", sub_areas="cover", child_side=(406.6, 164.4), region=[
         (370.8, 201), (370.8, 135), (445, 135), (445, 201)]),
+    # the Musandam tip, a stray 5.3-unit area of Jawf's (impassable rock with slivers of Jawf
+    # land) that drew a Jawf border at the top of the Oman peninsula: moved to Oman
+    "musandam": dict(src="wilderness_arabia", dst="oman", point=(400.5, 186.3)),
     "basra": dict(parent="mesopotamia", child="basra", sub_areas="cover", child_side=(343.6, 211.5),region=[(318.46, 197.31), (322.69, 211.94), (325.73, 221.80), (328.80, 223.59), (331.77, 225.18), (334.57, 226.54), (348.92, 223.20), (354.86, 222.00), (360.80, 220.92), (360.66, 209.83), (360.06, 193.18), (332.79, 196.19), (325.61, 196.83)]),
 }
 BATCH1 = ["brittany", "normandy", "provence", "lyonnais", "burgundy", "andorra"]
 BATCH2 = ['albania', 'aleppo', 'macedonia', 'wallachia', 'hudavendigar', 'aydin', 'karaman', 'adana', 'trebizond', 'erzurum', 'mosul', 'basra']
-BATCH3 = ["najd", "hejaz", "oman", "al_hasa"]      # Oman before al-Hasa: al-Hasa runs coast to void and would strand Oman
+BATCH3 = ["najd", "hejaz", "oman", "al_hasa", "musandam"]      # Oman before al-Hasa: al-Hasa runs coast to void and would strand Oman
 
 
 # ─── regions.esf ──────────────────────────────────────────────────────────────
@@ -1662,6 +1665,164 @@ def patrol(sp, spec, info, ai_of, new_ai, ids: IdPool) -> None:
           f"neighbour points re-targeted {retargeted}; coast points made {coast_pts}")
 
 
+# ─── moving an area between two existing regions ─────────────────────────────
+
+def move_area_regions_esf(root, spec) -> dict:
+    """Hand one area (found by a point in it) from region `src` to region `dst`, appended to
+    dst's areas (deep_dive 10.27). Nothing about its geometry changes, so its outline, faces and
+    edges stay; only what names it does: every stored neighbour run, quadtree edge tag and leaf
+    default that names (src, area) is renamed (dst, new index), and src's later areas move up one.
+    The area must be its own landmass group (its faces its own), as a stray piece is."""
+    m = Mesh(root)
+    names = [m.name(i) for i in range(len(m.regs))]
+    si, di = names.index(spec["src"]), names.index(spec["dst"])
+    s_areas, d_areas = m.areas(si), m.areas(di)
+    ai = next(k for k in range(len(s_areas)) if m.area_polygon(si, k).covers(Point(spec["point"])))
+    face = lambda a: tuple(a[6].children[0].value)
+    assert all(face(s_areas[ai]) != face(s_areas[k]) for k in range(len(s_areas)) if k != ai), \
+        f"{spec['src']} area {ai} shares its faces with another area"
+    poly = m.area_polygon(si, ai)
+    na = len(d_areas)
+    remap = {packed(si, ai): packed(di, na)}
+    remap.update({packed(si, k): packed(si, k - 1) for k in range(ai + 1, len(s_areas))})
+    area = s_areas.pop(ai)
+    d_areas.append(area)
+    runs = 0
+    for _, _, ol in m.outlines():
+        stored = m.stored_runs(ol)
+        new = [[remap.get(nb, nb), a, b] for nb, a, b in stored]
+        if new != stored:
+            m.write_runs(ol, new)
+            runs += 1
+    tags = defaults = 0
+    for _, _, cell in m.leaves():
+        segs = list(cell.children[2].value)
+        new = [remap.get(v, v) if i % 4 >= 2 else v for i, v in enumerate(segs)]
+        if new != segs:
+            set_list(cell.children[2], new)
+            tags += 1
+        d = cell.children[1].value
+        if d in remap:
+            set_int(cell.children[1], remap[d])
+            defaults += 1
+    m.set_region_bbox(si)
+    m.set_region_bbox(di)
+    print(f"regions.esf: {spec['src']} area {ai} ({poly.area:.2f}) -> {spec['dst']} area {na}; runs renamed on "
+          f"{runs} outlines, {tags} quadtree leaves retagged, {defaults} leaf defaults")
+    return {"si": si, "di": di, "ai": ai, "na": na, "poly": poly, "names": names}
+
+
+def move_area_startpos(sp, spec, info) -> None:
+    """The area's HLCI (one per area, [region ai, class, [area index], x, y]) goes with it."""
+    items = find(sp, "CAI_WORLD_REGIONS").children
+    s_cr, d_cr = (find(items[info[k]], "CAI_REGION") for k in ("si", "di"))
+    d_ai = items[info["di"]][2].value
+    hl = {it[1].value: it for it in find(sp, "CAI_WORLD_REGION_HLCIS").children}
+    s_h, d_h = list(s_cr.children[1].value), list(d_cr.children[1].value)
+    assert len(d_h) == info["na"], "HLCI count != area count"
+    moved = s_h.pop(info["ai"])
+    h = find(hl[moved], "CAI_REGION_HLCI")
+    set_int(h.children[0], d_ai)
+    set_list(h.children[2], [info["na"]])
+    for k, hid in enumerate(s_h):
+        set_list(find(hl[hid], "CAI_REGION_HLCI").children[2], [k])
+    set_list(s_cr.children[1], s_h)
+    set_list(d_cr.children[1], d_h + [moved])
+
+    # border patrol (one analysis per region, an entry per area: CAI_BORDER_PATROL_ANALYSIS_AREA_
+    # SPECIFIC [region ai, area index, points, x, y]): the area's entry goes to dst's analysis and
+    # src's later entries move up one. Left behind, it named an area src no longer has, and the AI
+    # read through a null area at end turn (Empire.exe+0x884087, deep_dive 10.27). Points name the
+    # regions they face: the moved ones no longer face dst, and dst's near the area not src.
+    s_ai = items[info["si"]][2].value
+    gb = find(find(sp, "CAI_INTERFACE"), "CAI_BDI_POOL_BELIEFS")
+    analysis = {}
+    for o in gb.children:
+        b = find(o, "CAI_BORDER_PATROL_ANALYSIS")
+        if b is not None and b.children[0].value in (s_ai, d_ai):
+            analysis[b.children[0].value] = find(b, "CAI_BORDER_PATROL_ANALYSIS_SPECIFIC_AREAS")
+    spec_of = lambda e: e[0] if isinstance(e, list) else e
+    s_entries = analysis[s_ai].children
+    entry = next(e for e in s_entries if spec_of(e).children[1].value == info["ai"])
+    s_entries.remove(entry)
+    for e in s_entries:
+        if spec_of(e).children[1].value > info["ai"]:
+            set_int(spec_of(e).children[1], spec_of(e).children[1].value - 1)
+    set_int(spec_of(entry).children[0], d_ai)
+    set_int(spec_of(entry).children[1], info["na"])
+    pts = next(n for n in spec_of(entry).children if isinstance(n, ESFNode))
+    kept = []
+    for pt in pts.children:
+        node = pt[0] if isinstance(pt, list) else pt
+        nb = [v for v in node.children[2].value if v != d_ai]
+        if nb:
+            set_list(node.children[2], nb)
+            kept.append(pt)
+    dropped = len(pts.children) - len(kept)
+    pts.children = kept
+    analysis[d_ai].children.append(entry)
+    near, unfaced = info["poly"].buffer(3.0), 0
+    for e in analysis[d_ai].children[:-1]:
+        lst = next(n for n in spec_of(e).children if isinstance(n, ESFNode))
+        out = []
+        for pt in lst.children:
+            node = pt[0] if isinstance(pt, list) else pt
+            xy = Point(node.children[0].value / FIXED, node.children[1].value / FIXED)
+            nb = list(node.children[2].value)
+            if s_ai in nb and near.contains(xy):
+                nb = [v for v in nb if v != s_ai]
+                unfaced += 1
+                if not nb:
+                    continue
+                set_list(node.children[2], nb)
+            out.append(pt)
+        lst.children = out
+    print(f"startpos: HLCI {moved} -> {spec['dst']} (area {info['na']}); border patrol entry moved with "
+          f"{len(kept)} points ({dropped} facing {spec['dst']} dropped), {unfaced} of {spec['dst']}'s points "
+          f"no longer face {spec['src']}")
+
+
+def move_area_pathfinding(pf_root, spec, info) -> None:
+    """The source region's land records inside the area are relabelled as the destination's;
+    impassable records stay impassable. Record counts do not change, so no node id moves."""
+    from etwpc.compiler.coastal import CellView, refresh_fields
+    from etwpc.compiler.footprint import AreaGrid, CellSpec
+    from shapely.geometry import box
+    g = AreaGrid(pf_root.children[0].children[PF_GRID])
+    spid, dpid = g.pid_of(info["si"]), g.pid_of(info["di"])
+    poly = info["poly"]
+    x0, y0, x1, y1 = poly.bounds
+    r0, c0 = g.cell_of(x0, y0)
+    r1, c1 = g.cell_of(x1, y1)
+    view = CellView(g)
+    specs, cells, n = {}, [], 0
+    for r in range(min(r0, r1), max(r0, r1) + 1):
+        for c in range(min(c0, c1), max(c0, c1) + 1):
+            ox, oy = g.ox + c * g.cs, g.oy + r * g.cs
+            if box(ox, oy, ox + g.cs, oy + g.cs).intersection(poly).area < 1e-6:
+                continue
+            recs = view.get(r, c)
+            sp_ = g.spec(r, c)
+            if isinstance(recs, tuple):
+                assert sp_.pid != spid, f"cell {(r, c)}: a whole {spec['src']} run cell in the area"
+                continue
+            if not any(q.t == 0 and q.be.path_id == spid for q in recs):
+                continue
+            bounds = []
+            for q in recs:
+                if q.t == 0 and q.be.path_id == spid:
+                    q.be.path_id = dpid
+                    n += 1
+                bounds.append(q.be.to_packed())
+            specs[r * g.cols + c] = CellSpec(sp_.hdr, bounds, None, None)
+            cells.append((r, c))
+    g._apply(specs)
+    fixed = refresh_fields(CellView(g), cells, types=(0,))
+    g.serialize()
+    print(f"pathfinding grid {PF_GRID}: {n} {spec['src']} land records in {len(cells)} cells relabelled "
+          f"{spec['dst']} (path id {spid} -> {dpid}), {fixed} fields recomputed")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--split", required=True, nargs="+", choices=sorted(SPLITS) + ["batch1", "batch2", "batch3"],
@@ -1687,6 +1848,13 @@ def main():
     for name in names:
         spec = SPLITS[name]
         print()
+        if "src" in spec:
+            print(f"== move {name}: {spec['src']} -> {spec['dst']} ==")
+            info = move_area_regions_esf(reg, spec)
+            move_area_startpos(sp, spec, info)
+            if pf is not None:
+                move_area_pathfinding(pf, spec, info)
+            continue
         print(f"== split {spec['parent']} -> {spec['child']} ==")
         info = split_regions_esf(reg, spec)
         split_startpos(sp, spec, info, ids)
