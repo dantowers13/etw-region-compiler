@@ -127,6 +127,7 @@ class RegionSpec:
     # our slot key (or "capital") -> (x, y), replacing the donor lookup.
     positions: dict[str, tuple[float, float]] | None = None
     footprints: bool | str = True     # False: none; "coastal": regions.esf outlines carved into coastal cells (coastal.py)
+    coastal_slots: tuple = ()         # with footprints True: slot keys carved at the coast like "coastal" instead
     # A region split off a live one (split_region.py, deep_dive 10). The parent's slot
     # records MOVE here, keeping their ids, buildings and AI history (deleting one would
     # leave ~300 AI references dangling): parent slot key -> (our key, display, new position
@@ -162,6 +163,28 @@ PARENT2 = {
 # Names are ~1700 (approved 2026-10-01); URR's legendary/anachronistic ones are replaced.
 # Owners must own a land region in vanilla (rebels own none), and the template must be
 # one of that owner's regions.
+# A new resource slot's starting building by its DB type: vanilla's level-1 building for that
+# type, or None to start empty (precious mines are an investment; about half of vanilla's
+# gold / silver / gem slots start empty)
+RESOURCE_BUILDINGS = {
+    "wheat": "wheat_peasant_farms", "sheep": "sheep_peasant_farms", "corn": "corn_peasant_farms",
+    "rice": "rice_paddies", "iron": "iron_mine", "timber": "timber_logging_camp", "fur": "fur_merchant",
+    "wine": "vineyards", "egypt": "small_cotton_plantation", "tropical_humid": "small_spices_plantation",
+    "caribbean": "small_sugar_plantation", "india_highlands": "small_tea_plantation",
+    "southern_usa": "small_tobacco_plantation", "cuba": "small_tobacco_plantation",
+    "gold": None, "silver": None, "gems": None,
+}
+# ... and slots that start empty whatever their type: Oman's copper (an iron slot) is a precious
+# mine like Arabia's gold, silver and pearls, so each Arabian region starts with one working
+# farm / herd and one mine to build
+START_EMPTY = {"iron:oman:wadi_jizzi"}
+
+# Arabian slots on a narrow coast (ports, the pearl banks, the Batinah gardens): carved at the
+# coast (RegionSpec.coastal_slots)
+COASTAL_TOWNS = {"town:al_hasa:qatif", "town:al_hasa:al_bidda", "town:al_hasa:uqair", "gems:al_hasa:pearl_banks",
+                 "town:oman:muscat", "town:oman:julfar", "town:oman:sohar", "town:oman:sur", "town:oman:abu_dhabi",
+                 "wheat:oman:batinah"}
+
 SPECS: dict[str, RegionSpec] = {s.name: s for s in [
     RegionSpec(
         name="wilderness_arabia", theatre_flag=2, pf_grid=2, theatre_name="europe", template="armenia",
@@ -191,9 +214,16 @@ SPECS: dict[str, RegionSpec] = {s.name: s for s in [
             "town:hejaz:medina": ("town:hejaz:medina", "Medina", "town"),
             "town:hejaz:jeddah": ("town:hejaz:jeddah", "Jeddah", "town"),
             "wheat:hejaz:khaybar": ("wheat:hejaz:khaybar", "Khaybar Oasis Farms", "wheat"),
+            "town:hejaz:yanbu": ("town:hejaz:yanbu", "Yanbu", "town"),
+            "town:hejaz:taif": ("town:hejaz:taif", "Ta'if", "town"),
+            # the ancient and Abbasid gold workings, the "cradle of gold"
+            "gold:hejaz:mahd_adh_dhahab": ("gold:hejaz:mahd_adh_dhahab", "Mahd adh-Dhahab Gold Mines", "gold"),
         },
         positions={"capital": (285.0, 153.0), "town:hejaz:medina": (282.1, 174.5),
-                   "town:hejaz:jeddah": (279.8, 154.6), "wheat:hejaz:khaybar": (279.8, 182.7)},
+                   "town:hejaz:jeddah": (279.8, 154.6), "wheat:hejaz:khaybar": (279.8, 182.7),
+                   "town:hejaz:yanbu": (271.9, 171.8), "town:hejaz:taif": (289.2, 150.9),
+                   "gold:hejaz:mahd_adh_dhahab": (292.2, 166.8)},
+        coastal_slots=("town:hejaz:jeddah", "town:hejaz:yanbu"),
         owner_faction="ottomans", emergent_nation="ottoman_rebels", rebels_name="Hejazi Rebels",
         culture="sc_mideast_islamic", population=(250000, 300000, 250000), colour=(176, 132, 64),
         religion=(("rel_islamic", 1.0),),
@@ -201,6 +231,48 @@ SPECS: dict[str, RegionSpec] = {s.name: s for s in [
                    "colonial_euro_factions", "global", "middle_east", "middle_east_and_europe"],
         wealth=(200, 200), wealth_distribution=(44, 132, 176, 22, 110, 110, 110, 66),
     ),
+    # The rest of the opened block (deep_dive 10.26): Najd, al-Hasa with Qatar, Oman with the
+    # Trucial coast; positions from out/split_planning_arabia (proj.py), coastal towns nudged
+    # 1.2 inland. Ottoman for now: the Emirate of Diriyah, Banu Khalid and the Ya'rubid imams
+    # are to be new factions.
+    *[RegionSpec(
+        name=n, theatre_flag=2, pf_grid=2, theatre_name="europe", template="armenia",
+        region_display=disp, settlement_key=f"settlement:{n}:{skey}", settlement_display=sdisp,
+        donor_settlement_key="", slot_map={k: (k, d, k.split(":")[0]) for k, d, _ in slots},
+        positions={"capital": cap, **{k: xy for k, _, xy in slots}},
+        owner_faction="ottomans", emergent_nation="ottoman_rebels", rebels_name=rebels,
+        culture="sc_mideast_islamic", population=pop, colour=col, religion=(("rel_islamic", 1.0),),
+        resources=["desert", "med_coast", "camels", "north_africa", "africa_west_indies", "galleys",
+                   "colonial_euro_factions", "global", "middle_east", "middle_east_and_europe"],
+        wealth=(200, 200), wealth_distribution=(44, 132, 176, 22, 110, 110, 110, 66),
+        coastal_slots=tuple(k for k, _, _ in slots if k in COASTAL_TOWNS),
+    ) for n, disp, skey, sdisp, cap, slots, rebels, pop, col in [
+        ("najd", "Najd", "diriyah", "Diriyah", (333.0, 174.3),
+         [("town:najd:unaizah", "Unaizah", (314.5, 183.4)), ("town:najd:sudair", "Sudair", (324.5, 181.8)),
+          ("wheat:najd:al_kharj", "Al-Kharj Oasis Farms", (337.9, 170.6)), ("town:najd:hail", "Ha'il", (296.6, 193.8)),
+          ("town:najd:al_aflaj", "Al-Aflaj", (333.1, 157.8)),
+          # al-Hamdani's silver mine of al-Yamama (10th century)
+          ("silver:najd:shamam", "Shamam Silver Mines", (329.5, 171.0)),
+          ("sheep:najd:dawadmi", "Najdi Camel Herds", (312.0, 172.0))],
+         "Najdi Rebels", (200000, 250000, 200000), (196, 152, 84)),
+        ("al_hasa", "Al-Hasa", "hofuf", "Hofuf", (353.9, 180.0),
+         [("town:al_hasa:qatif", "Qatif", (356.4, 187.1)), ("town:al_hasa:al_bidda", "Al-Bidda", (365.8, 180.0)),
+          ("town:al_hasa:uqair", "Uqair", (357.0, 181.0)),
+          # the Gulf's pearling banks, its great trade (a gems slot: no pearl resource exists)
+          ("gems:al_hasa:pearl_banks", "Qatar Pearl Banks", (364.4, 184.7)),
+          # one of the world's great date oases
+          ("wheat:al_hasa:hasa_oasis", "Al-Hasa Oasis Farms", (351.5, 174.5))],
+         "Hasawi Rebels", (150000, 200000, 150000), (96, 160, 112)),
+        ("oman", "Oman", "rustaq", "Rustaq", (406.6, 164.4),
+         [("town:oman:muscat", "Muscat", (416.3, 166.3)), ("town:oman:sohar", "Sohar", (401.6, 171.6)),
+          ("town:oman:nizwa", "Nizwa", (407.4, 159.6)), ("town:oman:julfar", "Julfar", (397.4, 181.7)),
+          ("town:oman:sur", "Sur", (423.6, 158.6)), ("town:oman:abu_dhabi", "Abu Dhabi", (383.0, 170.0)),
+          # the copper of ancient Magan, worked behind Sohar into the middle ages (copper as
+          # iron, like Cyprus's Troodos mines)
+          ("iron:oman:wadi_jizzi", "Wadi Jizzi Copper Mines", (398.1, 169.9)),
+          ("wheat:oman:batinah", "Batinah Date Gardens", (409.0, 169.0))],
+         "Omani Rebels", (250000, 300000, 250000), (166, 52, 60)),
+    ]],
     RegionSpec(
         name="wilderness_khiva", theatre_flag=2, pf_grid=2, theatre_name="europe", template="persia",
         region_display="Khwarezm", settlement_key="settlement:wilderness_khiva:khiva", settlement_display="Khiva",
@@ -970,12 +1042,23 @@ def patch_startpos(root, spec: RegionSpec, cai_region_idx: int, cai_region_ai_id
         slot_ids[s.key] = sid
         return sid
 
+    # every resource slot is a copy of the template's first one (armenia's: Oltu's iron mine),
+    # so its building is set by the slot's own type, or emptied (an undeveloped town's manager)
+    empty_bm = tpl_slots["town"][0].children[1] if "town" in tpl_slots and not has_building(tpl_slots["town"]) else None
+
     new_items = []
     for s in spec.slots:
         if s.kind in ("settlement_road", "settlement_fortification"):
             continue
         it = deep_copy(tpl_slots[s.kind])
         prep_slot(it[0], s)
+        if s.kind == "resource" and s.slot_type in RESOURCE_BUILDINGS:
+            want = None if s.key in START_EMPTY else RESOURCE_BUILDINGS[s.slot_type]
+            b = find(it[0].children[1], "BUILDING")
+            if want is None and empty_bm is not None:
+                it[0].children[1] = deep_copy(empty_bm)
+            elif want is not None and b is not None:
+                set_str(b.children[1], want)
         new_items.append(it)
     rsm.children[0].children = new_items
     for s in spec.slots:
@@ -1685,6 +1768,7 @@ def place_footprints(specs, pf_root, sp_root, regions_root) -> dict[int, AreaGri
                      for b in (BoundaryEntry.from_packed(a, c) for a, c in it.bounds))
     before = {gi: {rc: geometry(grid(gi), rc) for rc in v[2]} for gi, v in obs.items()}
     blocks: dict[int, list] = {}          # grid -> transplanted footprint centres
+    coast_taken: dict[str, list] = {}     # region -> outlines carved for its coastal_slots
     for spec in specs:
         if not spec.footprints:
             print(f"footprint {spec.name}: none (spec.footprints = False)")
@@ -1724,6 +1808,19 @@ def place_footprints(specs, pf_root, sp_root, regions_root) -> dict[int, AreaGri
                     return new_xy, pid
             return None, label(xy)
 
+        # towns on a narrow coast (Qatar, Julfar) have no clean square of interior cells near
+        # them, and the search below would move them inland by up to 12 units: their outlines
+        # are carved at the coast instead, and may cut the region's own interior cells (the
+        # coastal band of header cells is one cell deep). Before the transplants: a block
+        # transplanted nearby leaves no site (Jeddah, 5 units from Mecca's)
+        for sl in spec.slots:
+            if sl.key in spec.coastal_slots:
+                try:
+                    sl.pos = carve_outline_slot(spec, g, regions_root, sl.pos, sl.key, sl.kind, 0.5,
+                                                coast_taken.setdefault(spec.name, []), frozenset(res), allow_run=True)
+                except RuntimeError as e:
+                    print(f"   WARNING {sl.key}: {e}; slot left without footprint")
+
         old_cap = spec.capital
         new_cap, pid = place(old_cap)
         cap_pid = pid
@@ -1736,7 +1833,7 @@ def place_footprints(specs, pf_root, sp_root, regions_root) -> dict[int, AreaGri
             if sl.kind.startswith("settlement_"):
                 sl.pos = (sl.pos[0] + ddx, sl.pos[1] + ddy)
                 continue
-            if sl.kind not in ("town", "resource"):
+            if sl.kind not in ("town", "resource") or sl.key in spec.coastal_slots:
                 continue
             new_xy, pid = place(sl.pos, prefer=cap_pid)
             if new_xy is None:
@@ -1779,6 +1876,43 @@ def template_outline(regions_root, spec: RegionSpec, kind: str):
     return t[6].raw, t[2].value
 
 
+def carve_outline_slot(spec, g: AreaGrid, regions_root, xy, label, kind, min_land, taken, avoid,
+                       allow_run: bool = False) -> tuple:
+    """The vanilla rule for one slot (deep_dive 9.11): the template outline of `kind`, placed
+    at the nearest site to xy over header (coastal) cells where it fits, and carved there;
+    allow_run also lets it cut the region's own interior cells (as split footprints do).
+    Returns the site; `taken` gains the outline. Raises RuntimeError if no site is near."""
+    from shapely.geometry import Polygon
+    from etwpc.compiler.coastal import (CellView, carve_footprint, check_cells, check_nodes,
+                                        find_outline_site, ring_of, self_test)
+    rd = regions_root.children[3].children[3]
+    pid = g.pid_of([region_name(r) for r in rd.children].index(spec.name))
+    inside = region_ring_inside(regions_root, spec.name)
+    raw, anchor = template_outline(regions_root, spec, kind)
+
+    def make(x, y):
+        f = struct.unpack(f"<{len(raw) // 4}f", translate_footprint(raw, anchor, (x, y)))
+        return Polygon(list(zip(f[0::2], f[1::2])))
+
+    view = CellView(g)
+    x, y, outline = find_outline_site(view, make, xy, pid, inside, min_land=min_land, taken=taken, avoid=avoid,
+                                      allow_run=allow_run)
+    r0, c0 = g.cell_of(x, y)
+    around = [(r, c) for r in range(r0 - 4, r0 + 5) for c in range(c0 - 4, c0 + 5)]
+    bad = self_test(view, around)
+    assert not bad, f"{spec.name} {label}: encoding rules do not reproduce cells near {(x, y)}: {bad[:3]}"
+    res = carve_footprint(view, outline, pid, allow_run=allow_run)
+    bad = check_cells(view, res["cells"] + sorted(ring_of(res["cells"]))) + check_nodes(view, res["cells"])
+    bad += [f"cell {rc}: land record {i} reaches nothing" for rc in res["cells"]
+            for i, q in enumerate(view.get(*rc)) if q.t == 0 and not q.be.passable_part and not q.be.unknown2]
+    assert not bad, f"{spec.name} {label}: carved cells break a vanilla invariant: {bad[:3]}"
+    taken.append(outline)
+    print(f"   coastal footprint {label}: {xy} -> ({x:.3f}, {y:.3f}), outline area {res['area']:.3f} over "
+          f"cells {res['cells']}; {res['records_changed']} records rewritten in {res['rewritten_cells']} cells, "
+          f"{res['vertices_added']} vertices added")
+    return (x, y)
+
+
 def place_coastal_footprints(spec, g: AreaGrid, sp_root, regions_root) -> None:
     """Islands with no interior cells (deep_dive 9.8-9.11). In vanilla a slot outline IS
     the regions.esf footprint polygon (settlement_and_slots[1] for the settlement, slot[6]
@@ -1790,39 +1924,14 @@ def place_coastal_footprints(spec, g: AreaGrid, sp_root, regions_root) -> None:
     node, and so do their 4-neighbours (their fields are recomputed). Refuses to edit if
     the encoding rules do not reproduce the stored fields around a site, or if the edited
     cells break a vanilla invariant afterwards."""
-    from shapely.geometry import Polygon
-    from etwpc.compiler.coastal import (CellView, carve_footprint, check_cells, check_nodes,
-                                        find_outline_site, ring_of, self_test)
     osys = ObstacleSystem(find(sp_root, "CAMPAIGN_PATHFINDER").children[0].children[spec.pf_grid])
     avoid = frozenset((p >> 16, p & 0xFFFF) for p, _ in osys.pairs)
     rd = regions_root.children[3].children[3]
     pid = g.pid_of([region_name(r) for r in rd.children].index(spec.name))
-    inside = region_ring_inside(regions_root, spec.name)
     taken = []
 
     def place(xy, label, kind, min_land):
-        raw, anchor = template_outline(regions_root, spec, kind)
-
-        def make(x, y):
-            f = struct.unpack(f"<{len(raw) // 4}f", translate_footprint(raw, anchor, (x, y)))
-            return Polygon(list(zip(f[0::2], f[1::2])))
-
-        view = CellView(g)
-        x, y, outline = find_outline_site(view, make, xy, pid, inside, min_land=min_land, taken=taken, avoid=avoid)
-        r0, c0 = g.cell_of(x, y)
-        around = [(r, c) for r in range(r0 - 4, r0 + 5) for c in range(c0 - 4, c0 + 5)]
-        bad = self_test(view, around)
-        assert not bad, f"{spec.name} {label}: encoding rules do not reproduce cells near {(x, y)}: {bad[:3]}"
-        res = carve_footprint(view, outline, pid)
-        bad = check_cells(view, res["cells"] + sorted(ring_of(res["cells"]))) + check_nodes(view, res["cells"])
-        bad += [f"cell {rc}: land record {i} reaches nothing" for rc in res["cells"]
-                for i, q in enumerate(view.get(*rc)) if q.t == 0 and not q.be.passable_part and not q.be.unknown2]
-        assert not bad, f"{spec.name} {label}: carved cells break a vanilla invariant: {bad[:3]}"
-        taken.append(outline)
-        print(f"   coastal footprint {label}: {xy} -> ({x:.3f}, {y:.3f}), outline area {res['area']:.3f} over "
-              f"cells {res['cells']}; {res['records_changed']} records rewritten in {res['rewritten_cells']} cells, "
-              f"{res['vertices_added']} vertices added")
-        return (x, y)
+        return carve_outline_slot(spec, g, regions_root, xy, label, kind, min_land, taken, avoid)
 
     old_cap = spec.capital
     spec.capital = place(old_cap, "capital", "capital", min_land=0.7)

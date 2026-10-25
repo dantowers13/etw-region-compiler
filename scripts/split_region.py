@@ -109,18 +109,31 @@ SPLITS = {
                       seeds=[(279.7, 290.0)], cuts=[[(266.5, 297.0), (266.5, 285.5)]]),
     "erzurum": dict(parent="anatolia", child="erzurum", sub_areas="cover", child_side=(293.2, 282.8), region=[(266.00, 306.00), (266.00, 290.00), (270.00, 283.00), (276.00, 276.00), (281.00, 270.00), (283.00, 258.00), (340.00, 258.00), (340.00, 306.00)]),
     "mosul": dict(parent="mesopotamia", child="mosul", sub_areas="cover", child_side=(305.4, 256.6), region=[(289.35, 245.16), (290.08, 248.92), (290.41, 251.91), (290.49, 254.12), (290.45, 255.57), (290.13, 258.44), (289.52, 261.25), (288.65, 264.01), (287.26, 267.41), (285.33, 271.46), (290.02, 271.40), (294.34, 271.66), (298.96, 272.22), (306.78, 273.47), (309.64, 273.86), (312.57, 274.11), (315.54, 274.17), (318.52, 274.03), (322.27, 273.62), (339.18, 270.99), (339.32, 253.71), (339.52, 248.75), (339.84, 244.74), (333.88, 244.91), (328.62, 244.73), (324.14, 244.31), (316.17, 243.15), (313.72, 243.00), (311.49, 243.22), (306.92, 244.33), (304.54, 244.65), (302.33, 244.74), (295.01, 244.72), (292.46, 244.86)]),
-    # Batch 3, Arabia (deep_dive 10.22): children of the VOID region `arabia`, which has no
-    # path id, no AI edges and impassable cells; S2 opens the child's cells instead of
-    # splitting a parent's (open_void_pathfinding). The Rub' al Khali stays void. First
-    # test keeps a void gap round Jawf (no land link yet) and stops at the Europe grid's
-    # southern edge (y 140; Mecca 153, Jeddah 154).
-    "hejaz": dict(parent="arabia", child="hejaz", child_side=(283.0, 165.0), void_parent=True,
-                  avoid={"wilderness_arabia": 1.5}, min_y=140.6, theatre=34, region=[
-        (250, 200), (281, 200), (289, 190), (292, 176), (295, 162), (298, 150), (300, 138), (250, 138)]),
+    # Batch 3, Arabia (deep_dive 10.22, 10.26): the VOID region `arabia` has no path id, no AI
+    # edges and impassable cells. One block of it is opened as `najd` (open_void_pathfinding:
+    # cells cut by its edge stay impassable, so it keeps a void gap round Jawf, no land link
+    # yet), then Hejaz, al-Hasa and Oman are split off the block like any passable region, so
+    # the four share real border strips. The Rub' al Khali stays void, and everything south of
+    # the Europe grid (y 140). Lines: out/split_planning_arabia (lon/lat fit in proj.py),
+    # c.1700, to be revisited in the border audit.
+    "najd": dict(parent="arabia", child="najd", child_side=(333.0, 174.3), void_parent=True,
+                 avoid={"wilderness_arabia": 1.5}, min_y=140.6, theatre=34, region=[
+        (250, 138), (250, 201), (445, 201), (445, 140), (399, 140), (389, 147), (376, 155), (370, 164),
+        (352, 161), (343, 163), (336, 152), (322, 138)]),
+    "hejaz": dict(parent="najd", child="hejaz", child_side=(285.0, 152.1), region=[
+        (250, 201), (281, 201), (289, 190), (292, 176), (295, 162), (298, 150), (300, 138), (250, 138)]),
+    # their southern limit is the block's edge: the drawn polygons reach past it, so a cut
+    # crosses the block's land only (a cut along its ring loses the shared vertices)
+    "al_hasa": dict(parent="najd", child="al_hasa", child_side=(353.9, 180.0), region=[
+        (343, 201), (342, 185), (344, 172), (343, 163), (343, 150), (371, 150), (371, 176), (372, 201)]),
+    # Abu Dhabi and Masirah, islands the block took from `arabia`, go with Oman
+    "oman": dict(parent="najd", child="oman", sub_areas="cover", child_side=(406.6, 164.4), region=[
+        (370.8, 201), (370.8, 135), (445, 135), (445, 201)]),
     "basra": dict(parent="mesopotamia", child="basra", sub_areas="cover", child_side=(343.6, 211.5),region=[(318.46, 197.31), (322.69, 211.94), (325.73, 221.80), (328.80, 223.59), (331.77, 225.18), (334.57, 226.54), (348.92, 223.20), (354.86, 222.00), (360.80, 220.92), (360.66, 209.83), (360.06, 193.18), (332.79, 196.19), (325.61, 196.83)]),
 }
 BATCH1 = ["brittany", "normandy", "provence", "lyonnais", "burgundy", "andorra"]
 BATCH2 = ['albania', 'aleppo', 'macedonia', 'wallachia', 'hudavendigar', 'aydin', 'karaman', 'adana', 'trebizond', 'erzurum', 'mosul', 'basra']
+BATCH3 = ["najd", "hejaz", "oman", "al_hasa"]      # Oman before al-Hasa: al-Hasa runs coast to void and would strand Oman
 
 
 # ─── regions.esf ──────────────────────────────────────────────────────────────
@@ -1651,7 +1664,7 @@ def patrol(sp, spec, info, ai_of, new_ai, ids: IdPool) -> None:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--split", required=True, nargs="+", choices=sorted(SPLITS) + ["batch1", "batch2"],
+    ap.add_argument("--split", required=True, nargs="+", choices=sorted(SPLITS) + ["batch1", "batch2", "batch3"],
                     help="splits to apply in order (batch1 = brittany normandy provence lyonnais burgundy andorra)")
     ap.add_argument("--regions-esf", type=Path, required=True)
     ap.add_argument("--startpos-esf", type=Path, required=True)
@@ -1660,7 +1673,7 @@ def main():
     ap.add_argument("--copy-from", type=Path, help="copy pathfinding.esf (without S2) / *.pack from this build dir")
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args()
-    names = [x for n in a.split for x in {"batch1": BATCH1, "batch2": BATCH2}.get(n, [n])]
+    names = [x for n in a.split for x in {"batch1": BATCH1, "batch2": BATCH2, "batch3": BATCH3}.get(n, [n])]
     a.out.mkdir(parents=True, exist_ok=True)
     rr = ESFReader(a.regions_esf)
     reg = rr.read_root()
